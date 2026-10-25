@@ -105,6 +105,14 @@ namespace artemis
 		// e:tag{...} calls out of it.
 		const std::string& lua() const { return m_lua; }
 
+		// A bare .lua file: its whole text is the Lua source the [calllua]
+		// stub reads.  The pf8 title keeps its functions in real .lua files,
+		// loaded by the boot's e:include calls.
+		static void ParseLua(const std::string& text, IetScript& out)
+		{
+			out.m_lua = text;
+		}
+
 	private:
 		friend struct IetParser;
 		std::string m_name;

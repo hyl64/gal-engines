@@ -235,7 +235,14 @@ namespace artemis
 		}
 		IetScript script;
 		const std::string text = DecodeScenarioText(bytes.data(), bytes.size());
-		if(!IetScript::Parse(text, script, error))
+		const std::string lower = key;
+		const bool isLuaFile = lower.size() > 4 && lower.compare(lower.size()-4, 4, ".lua") == 0;
+		if(isLuaFile)
+		{
+			// a bare .lua file: the whole text is Lua the [calllua] stub reads
+			IetScript::ParseLua(text, script);
+		}
+		else if(!IetScript::Parse(text, script, error))
 		{
 			error = file + ": " + error;
 			return false;
@@ -1316,6 +1323,31 @@ namespace artemis
 		{
 			source += m_scripts[key].lua();
 			source += "\n";
+		}
+		// the game's Lua pulls in more of itself with e:include: load every
+		// file the current source asks for before reading the tags, so the
+		// functions those files define are searchable too
+		if(m_config.assets != nullptr)
+		{
+			size_t at = 0;
+			while((at = source.find("e:include(\"", at)) != std::string::npos)
+			{
+				const size_t a = at + strlen("e:include(\"");
+				const size_t b = source.find('"', a);
+				if(b == std::string::npos) break;
+				const std::string inc = source.substr(a, b - a);
+				at = b + 1;
+				std::string incError;
+				if(m_scripts.find(NormalizePath(inc)) == m_scripts.end() &&
+				   m_scripts.find(inc) == m_scripts.end())
+					LoadScript(inc, incError);
+			}
+			source.clear();
+			for(const std::string& key : m_scriptOrder)
+			{
+				source += m_scripts[key].lua();
+				source += "\n";
+			}
 		}
 		// drop Lua comments and keep string literals intact: the game has whole
 		// macroadds commented out, and running those would invent macros
