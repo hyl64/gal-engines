@@ -5,3 +5,5 @@ mpvdev/out/
 mpvdev/mpvdev_harness
 mpvdev/fixtures/
 build-dbg/
+build-asan/
+build-o2/

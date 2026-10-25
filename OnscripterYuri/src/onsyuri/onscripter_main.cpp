@@ -500,6 +500,11 @@ static void installCrashHandler()
     signal(SIGSEGV, crashHandler);
     signal(SIGABRT, crashHandler);
     signal(SIGBUS, crashHandler);
+    /* SIGTRAP shows up as 'Trace/BPT trap: 5' -- a compiler or libc trap rather
+     * than a plain bad pointer, and without this the process just vanishes. */
+    signal(SIGTRAP, crashHandler);
+    signal(SIGILL, crashHandler);
+    signal(SIGFPE, crashHandler);
 }
 #else
 static void installCrashHandler() {}

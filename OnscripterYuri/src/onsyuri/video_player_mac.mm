@@ -1037,7 +1037,12 @@ static void layerDecodeLoop(NSString *nspath)
                     if ([reader status] != AVAssetReaderStatusReading) break;
                     [NSThread sleepForTimeInterval:0.005];
                 }
-                [NSThread sleepForTimeInterval:0.05];   // let the emit queue settle
+                /* MediaToolbox/CoreMedia reaches into the reader through XPC
+                 * (memoryOriginServer, FigXPCMessageCopyCFObject) after
+                 * cancelReading; freeing the output while those replies are in
+                 * flight crashed there next.  Give the framework a clear margin
+                 * before the autorelease pool drains and takes the objects with it. */
+                [NSThread sleepForTimeInterval:0.30];
                 readerLock.unlock();
             }
             /* The pass is over.  Looping: go round again (the reader is built

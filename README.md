@@ -47,10 +47,12 @@ gal-engines/
 | ① NScripter | 官方 SDK 四个样例 | **可以运行** |
 | ② KiriKiri | `testdata/kag3-sample`（KAG3 3.32 官方框架 + first.ks） | **可以运行** |
 | ④ Ethornell | `testdata/bgi-trial`（《遥か碧の花嫁に》官方体验版） | **可以运行** |
-| ⑤ Artemis | 三套真实作品（见下） | **归档层可以读**，画面层未通 |
+| ⑤ Artemis | 三套真实归档（pf6/pf8，2,884 句台词） | **标题→正文可玩，60 FPS** |
 | ③ RealLive | CLANNAD Full Voice（231 剧本，4 GB） | **260/260 单测；标题/立绘/中文台词/系统菜单** |
 
 **四个引擎在真实数据上通过验收**；引擎⑤ 从零实现，已接手三套真实作品。
+
+完整的状态表、每项能力与已知缺口见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 各引擎的证据
 

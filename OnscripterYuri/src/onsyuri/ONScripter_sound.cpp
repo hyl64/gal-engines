@@ -102,9 +102,23 @@ int ONScripter::playSound(const char *filename, int format, bool loop_flag, int 
         script_h.cBR->getFile( filename, buffer );
     }
     
+    /* Mix_LoadWAV_RW silently falls back to Mix_LoadMusic_RW when the data is a
+     * music format, and a music object keeps the RWops (and therefore our buffer)
+     * for lazy decoding and seeking.  The chunk path then does 'delete[] buffer'
+     * on success -- so an OGG arriving as SOUND_CHUNK became a use-after-free that
+     * crashed inside ov_pcm_seek.  Route music formats down the music path, which
+     * keeps the buffer in music_buffer. */
+    if ((format & SOUND_CHUNK) && length >= 4 && buffer &&
+        !memcmp(buffer, "OggS", 4))
+        format |= SOUND_MUSIC;
+
     if (format & SOUND_MUSIC){
 #if SDL_MIXER_MAJOR_VERSION >= 2
-        music_info = Mix_LoadMUS_RW( SDL_RWFromMem( buffer, length ), 0);
+        /* freesrc=1: SDL_mixer owns the RWops and frees it with the music.  Passing 0
+         * leaked one SDL_RWops per BGM change -- the trial switches BGM constantly --
+         * and left an RWops pointing at music_buffer behind every free, which is the
+         * shape of a use-after-free inside the vorbis seek path. */
+        music_info = Mix_LoadMUS_RW( SDL_RWFromMem( buffer, length ), 1);
 #else
         music_info = Mix_LoadMUS_RW(SDL_RWFromMem(buffer, length));
 #endif

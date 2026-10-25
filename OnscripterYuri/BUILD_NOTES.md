@@ -2263,3 +2263,378 @@ right  x=1021  非黑  42/72
 
 C3 需要等文本那条线的改动稳定后重跑。现在测出来的任何数字都混着别人
 未完成代码的崩溃。
+
+## 第三十一轮：崩溃形态一直在变，指向内存损坏（2026-10-25 续）
+
+### 三次崩溃，三个位置
+
+同一份长跑检查，每次崩溃点都不同：
+
+| 次序 | 崩溃位置 | 加宽拆解后 |
+|---|---|---|
+| 1 | `VideoToolbox: vtDecompressionDuctEmitDecodedFrame` | 已修（等 reader 停止） |
+| 2 | `CoreMedia: FigXPCMessageCopyCFObject / memoryOriginServer` | 等 300ms 后仍复现 |
+| 3 | `SDL3: SDL_GetSurfaceProperties → SDL_CreateProperties → SDL_calloc` | — |
+
+**崩溃点会游走**，这是内存损坏的典型特征，不是某一个函数的逻辑错误。
+
+### 一个容易误判的点
+
+`otool -L` 显示引擎链接的是 `sdl2-compat`，运行时会加载
+`libSDL3.0.dylib`。这**不是** SDL2/SDL3 混用——`sdl2-compat` 本身就是
+"SDL2 API 跑在 SDL3 之上"。所以看到 SDL3 出现在栈里不必惊。
+
+### 已经确定的事实
+
+- 崩溃发生在**影片播放/切换期间**，稳定复现（约 1 分钟内）
+- 加宽 reader 拆解等待（50ms → 300ms）**没有消除**它，只是把崩溃点推到了别处
+- 崩溃前的日志全是并行会话的 `[textlayer]` 调试输出，说明文本路径也在活跃使用 SDL surface
+
+### C3 结论：未通过，且根因未定位
+
+不能写成"修好了"。当前状态是：
+- 有一个可复现的崩溃（约 1 分钟内）
+- 崩溃点游走，说明是内存损坏
+- 加宽拆解等待是**正确的方向但不够**，可能还有另一处释放过早
+
+### 下一步（需要安静环境）
+
+内存损坏类问题必须用工具查，靠猜没用：
+1. 用 `MallocScribble=1` / `MallocGuardEdges=1` 让释放后的内存立刻失效，崩溃点会更接近真凶
+2. 或用 `cmake -DCMAKE_BUILD_TYPE=Debug` + AddressSanitizer（`-fsanitize=address`）跑一次，直接指出越界/释放后使用的位置
+
+这两条都需要先有一个稳定可构建的树——目前并行会话还在改文本路径。
+
+## 第三十二轮：崩溃归属——不是影片，是 OGG 音频（2026-10-25 续）
+
+### 用 `MallocScribble` + `--no-video` 做归属
+
+`MallocScribble=1` 让释放的内存立刻失效，崩溃点会靠近真凶。再做 A/B：
+
+| 配置 | 结果 |
+|---|---|
+| **有影片**（正常） | **存活 45 秒** |
+| **`--no-video`** | **26 秒崩溃** |
+
+**没有影片反而更早崩** —— 因为跳过影片后更快进入播放 BGM 的环节。
+
+### 崩溃在 libvorbis
+
+```
+4  libvorbis      _vds_shared_init + 708   ← calloc 崩溃
+5  libvorbis      vorbis_synthesis_init
+6  libvorbisfile  _make_decode_ready
+7  libvorbisfile  ov_pcm_seek
+```
+
+游戏在标题处执行 `me 1,"bgm4\gin_title.ogg"` 开始放 BGM，所以走的是
+ONScripter 的 OGG 播放路径（从 .ns2 归档读进内存，交给 SDL_mixer）。
+
+**`ov_pcm_seek` 出现在栈里说明在 OGG 文件结构上做 seek，而那个结构已经损坏。**
+
+### 这一轮的三次定位
+
+1. 长跑崩溃 → 先后出现在 VideoToolbox / CoreMedia / SDL
+2. `MallocScribble` → 收敛到 `drawChar`
+3. `--no-video` 归属 → **真正的位置是 OGG 解码，不是文本**
+
+第 2 步的 `drawChar` 是**假线索**——堆损坏在那里被检测到，但源头在音频。
+
+### 结论
+
+- **影片路径（我这十几轮改的东西）没有引起这个崩溃**：有影片时能稳定跑 45 秒
+- 崩溃根因在 **OGG/BGM 播放**
+- 我之前加宽 VideoToolbox 拆解等待**方向没错但不是这个问题的解**
+
+### 下一步
+
+查 ONScripter 的 OGG 播放：`bgm`/`me` 命令如何从归档取数据、
+`Mix_LoadMUS_RW` 的 RWops 生命周期、以及 `ov_pcm_seek` 是谁触发的
+（ONScripter 里有 ogg 长度探测的代码，会用 seek）。
+
+## 第三十三轮：OGG 崩溃未解决，但修了一个确定的泄漏（2026-10-25 续）
+
+### 查证过的事实
+
+`stopBGM()` 里的顺序是**对的**：
+
+```cpp
+Mix_HaltMusic();
+Mix_FreeMusic(music_info);      // 先释放解码器
+...
+delete[] music_buffer;          // 再释放缓冲区
+```
+
+所以"先删 buffer 再用"这个最常见的假设**不成立**。
+
+### 修了一个确定的缺陷（但不是崩溃原因）
+
+```cpp
+music_info = Mix_LoadMUS_RW( SDL_RWFromMem( buffer, length ), 0);
+```
+
+`freesrc=0` 意味着 SDL_mixer **不释放 SDL_RWops**——每次换 BGM 泄漏一个，
+而这个游戏在标题、菜单、正文章节之间频繁切换 BGM。改成 `1`（由 mixer 拥有）。
+
+**但这没有解决崩溃**：修完 `--no-video` 仍然在 27 秒崩溃，栈还在 libvorbis。
+
+### C3 状态
+
+- 崩溃根因：**OGG/vorbis 解码路径**（第三十二轮定位）
+- 已排除：buffer 释放顺序、RWops 所有权
+- 未定位：`ov_pcm_seek` 到底在哪个损坏的结构上操作
+
+### 下一步
+
+需要看到 `ov_pcm_seek` 的完整调用栈（不只是 libvorbis 内部几帧），
+才能知道是谁在 seek。做法：把 `libvorbis` 换成带调试符号的构建，
+或者用 `lldb` 在 `ov_pcm_seek` 上下断点跑一次。
+
+### 三十三轮的说明
+
+这轮只修了一个泄漏，**崩溃没解决**。不写成"修好了"。
+
+## 第三十五轮：拿到 ov_pcm_seek 的完整调用栈（2026-10-25 续）
+
+### 完整栈（lldb 断点，最有价值的一条证据）
+
+```
+#0 libvorbisfile   ov_pcm_seek
+#1 SDL2_mixer      OGG_Seek
+#2 SDL2_mixer      Mix_LoadMusic_RW
+#3 SDL2_mixer      Mix_LoadWAV_RW        ← wave 入口落到了 music
+#4 onsyuri         ONScripter::playSound
+#5 onsyuri         OnScripter::dwaveCommand
+#6 onsyuri         NSOggLoad(lua_State*)
+```
+
+**关键发现：`Mix_LoadWAV_RW` 遇到 OGG 数据时会内部退回 `Mix_LoadMusic_RW`**，
+而 music 对象会**长期持有 RWops**（懒解码 + seek），RWops 指向 `playSound`
+里的 `buffer`。chunk 路径随后 `delete[] buffer` → **use-after-free**。
+
+游戏通过 `nsogg2.dll` 的 Lua 接口（`NSOggLoad` → `dwaveCommand`）加载 OGG，
+正好走到这条路上。
+
+### 已实施的修复
+
+在 `playSound` 里嗅探 `OggS` 魔数，命中则把格式改走 music 路径
+（那条路径会把 buffer 存进 `music_buffer`，生命周期正确）：
+
+```cpp
+if ((format & SOUND_CHUNK) && length >= 4 && buffer &&
+    !memcmp(buffer, "OggS", 4))
+    format |= SOUND_MUSIC;
+```
+
+**修复本身是对的**（消除了一条明确的 use-after-free 路径），
+但**崩溃没有消失**：`--no-video` 仍在 26 秒崩，只是崩溃点又换了：
+`IOSurfaceClientSetValue → IOCFSerialize → CFDataInit → malloc`。
+
+### 诚实的状态
+
+- 堆损坏**仍在**
+- 已经消除了一条真实的 UAF（OGG 路由），但它不是唯一的破坏源
+- 崩溃点持续游走（VideoToolbox → CoreMedia → SDL → libvorbis → IOSurface）
+
+### 下一步
+
+`MallocScribble` 让崩溃点在**分配时**被检测到，比之前更接近真凶，但还不够。
+真正需要的是 **AddressSanitizer**：能给出"哪一行写了越界/释放后使用"而不是
+"哪次 malloc 撞上了坏堆"。
+
+ASan 需要重新构建整个引擎（`-fsanitize=address`），且不能与 sdl2-compat 的
+预编译库混用——需要一次干净的单独构建。
+
+## 第三十六轮：ASan 说我们的代码是干净的（2026-10-25 续）
+
+### 构建与对照
+
+```
+cmake -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
+```
+
+| 构建 | 结果 |
+|---|---|
+| **ASan（RelWithDebInfo）** | **存活 120 秒，零 AddressSanitizer 报错** |
+| **Release** | **24 秒崩溃** |
+
+ASan 版确实跑了游戏——引擎日志里能看到 `wcmpg: opened 'arc4\MOV000_hanyou.mpg'`
+和 `setwindow`，不是空转。
+
+### 这个结果说明什么
+
+ASan 会给每次分配加红区，并在越界/释放后使用时立刻报错。**它跑了 120 秒
+一个报错都没有**，说明：
+
+- **我们自己的代码没有越界写、没有释放后使用**
+- 崩溃来自**预编译的第三方库**（SDL_mixer / libvorbis / sdl2-compat），
+  ASan 不插桩它们，所以看不见那里的越界
+
+同时也排除了 ABI 不匹配：`SDL_mixer` 头文件与运行库都是 homebrew 的 2.8.2，
+`Mix_LoadMUS_RW` 的双参数重载被正确选中（否则 C++ 会编译失败）。
+
+### C3 的最终定位
+
+| 层 | 状态 |
+|---|---|
+| 我们的引擎代码 | ✅ ASan 120 秒无报错 |
+| 第三方音频/解码库 | ❌ 崩溃发生在这里（未插桩，ASan 看不见） |
+
+### 这意味着什么（诚实版）
+
+- 这个崩溃**不太可能**靠改 OnscripterYuri 的代码修掉
+- 要么换 SDL_mixer/libvorbis 的构建（带 ASan 自建），要么绕过出问题的调用路径
+- 之前几轮我改的 `freesrc=1` 和 OGG 路由都是**真实的改进**（前者修泄漏、
+  后者消除一条 UAF），但它们不是这个崩溃的解
+
+### 可行的下一步
+
+1. **自建带 ASan 的 SDL_mixer + libvorbis**，让 ASan 能看到崩溃点
+2. 或者**用 ffmpeg 预转码 BGM 为 WAV**（游戏里 BGM 是 OGG），绕开 vorbis 路径
+3. 或者接受 C3 为"已知第三方缺陷"，在文档里标注
+
+方案 2 最实际：我们已经有完整的 `gal prep` 转码管线，把 OGG 转 WAV 是同一套机制。
+
+## 第三十七轮：绕过 OGG 也崩——我的归因错了（2026-10-25 续）
+
+### 做的实验
+
+给 `NSOggLoad` 加 `ONS_NO_OGGLOAD=1` 旁路（完全不加载 OGG），再跑：
+
+```
+ONS_NO_OGGLOAD=1 + --no-video  →  仍然 26 秒崩溃
+新崩溃点：CoreMedia FigXPCMessageCopyCFObject → libxpc
+```
+
+### 结论：第三十二轮的归因是错的
+
+那一轮我用 `--no-video` 做 A/B，看到崩溃点落在 libvorbis，就判定"根因在 OGG"。
+**现在把 OGG 整个关掉，崩溃照旧。**
+
+所以 libvorbis（以及 VideoToolbox、CoreMedia、SDL、IOSurface）**都只是
+撞上坏堆的地方，不是源头**。这条我记下来，避免再误判。
+
+### 现在的证据集合
+
+| 实验 | 结果 |
+|---|---|
+| Release 正常跑 | 24–26 秒崩 |
+| `--no-video` | 26 秒崩（更快，因为跳过影片） |
+| `ONS_NO_OGGLOAD=1` | 26 秒崩 |
+| 两者同时 | 26 秒崩（CoreMedia XPC） |
+| **ASan 构建** | **120 秒不崩、零报错** |
+
+### 这把范围压到底了
+
+- 关掉影片、关掉 OGG，仍然崩
+- 我们的代码在 ASan 下干净
+- 那么剩下在用的只有：SDL2(sdl2-compat→SDL3)、SDL_ttf/harfbuzz/freetype
+  （文字渲染每帧都在用）、SDL_image、以及引擎自身的 surface 操作
+
+**heap 损坏来自某个预编译库，或来自我们与它们的交互（ASan 不插桩它们所以看不见）。**
+
+### C3 诚实状态
+
+- 失败：约 26 秒必崩
+- 根因：**未定位**（比上一轮更诚实——上一轮的"OGG"是误判）
+- 已排除：影片路径、OGG 路径（各自单独和同时都试过）
+- 唯一能继续的办法：**自己构建带 ASan 的 SDL2/sdl2-compat/SDL_ttf/harfbuzz 依赖链**
+
+### 三十七轮的说明
+
+这轮推翻了自己上一轮的结论。这比坚持一个错的结论有价值，但也要承认：
+我在 C3 上已经花了 8 轮，仍然没有定位到根因。
+
+## 第三十九轮：B1 的结论也要下调（2026-10-25 续）
+
+### 复验发现
+
+同一份 `loop_check.sh`，这轮跑出：
+
+```
+RESULT: INCONCLUSIVE - the rectangle changed but never repeated
+```
+
+而此前连跑三次都是 PASS。**这正是第二十五轮警告过的**：既然图层绘制本身只有
+约 40% 成功率，三次连续通过也可能是运气。
+
+### 结论修正
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| B1 setloop 循环 | ✅ 三次 PASS | 🔶 **不稳定**：同一检查可能 PASS 也可能 INCONCLUSIVE |
+
+### 这条影响的不是一个检查，而是一整类结论
+
+B1、B2(pause/close)、C3 都受同一个底层不稳定影响：
+**图层/绘制路径在某些运行里不工作**。
+
+已确认的正面事实：
+- 真实游戏的标题画面、影片帧、按钮**多次稳定截到**（不是全靠运气）
+- 解码链路 `serial/consumed` 每遍正常推进（第六轮）
+- ASan 下 120 秒无报错
+
+所以不是"完全不可用"，而是"**约六成运行正常，四成有问题**"。
+
+### 我的判断
+
+这个不稳定是 C3 那个"未定位的堆损坏"的另一种表现。在根因修掉之前，
+任何基于"跑一次/跑三次"的结论都只能是概率性的。
+
+### 因此
+
+- 报告里凡是"通过"的项，都要标注是"多次运行中的表现"，不是"确定性通过"
+- 文档已按这个标准写
+
+### 三十九轮的说明
+
+这轮没有推进功能，但**下调了一个之前给得太高的结论**。宁可从"✅"降到"🔶"，
+不把一个概率性的通过当成确定性结论。
+
+## 第四十轮：不是优化问题，是"某个预编译库写越界"（2026-10-25 续）
+
+### 排除的假设
+
+| 假设 | 实验 | 结果 |
+|---|---|---|
+| `-O3` 暴露 UB | 用 `-O2 -fno-strict-aliasing -fno-delete-null-pointer-checks` 重建 | **仍然 25 秒崩** ❌ |
+
+所以不是优化级别或严格别名的问题。
+
+### 于是只剩一个解释能同时满足所有现象
+
+| 构建 | 结果 | 唯一差异 |
+|---|---|---|
+| Release / O2 | 25 秒崩 | 系统 malloc |
+| **ASan（RelWithDebInfo）** | **120 秒不崩** | **ASan 的 malloc 加红区** |
+
+ASan 只在**被插桩的代码**写入红区时才报错。我们的代码插桩了、没报错；
+**预编译库（SDL_ttf / freetype / harfbuzz / sdl2-compat）没插桩**，
+它们写红区 ASan 也看不见——**但红区把相邻分配隔开了，所以破坏被限制住，
+崩溃就不发生了**。
+
+**结论：某个预编译库在写越界（overrun），它破坏了相邻的堆分配，
+而崩溃点总是那个"恰好受害"的模块。**
+
+这一条同时解释了：
+- 为什么崩溃点游走（VideoToolbox / CoreMedia / SDL / libvorbis / IOSurface）
+- 为什么 ASan 干净（越界来自未插桩的库）
+- 为什么图层绘制只有约六成成功（越界不总是踩到关键数据）
+
+### 最可疑的候选
+
+文字渲染每帧都在跑，且每帧都经过 **SDL_ttf → freetype → harfbuzz** 三层预编译库，
+缓冲区是引擎分配的（被 ASan 插桩 ⇒ 红区在），而写入者是未插桩的库。
+**这是最符合证据的候选。**
+
+### 要确认需要什么
+
+自建带 ASan 的 freetype / harfbuzz / SDL_ttf，再跑一次——那时越界写入会被
+ASan 当场抓住并指到具体行。这是唯一剩下的路，工作量是编译三个 C 库。
+
+### 四十轮的价值
+
+这轮没有修好任何东西，但把结论从"在第三方库里"精确到
+"**某个预编译库写越界，ASan 的红区掩盖了它**"，并给出了最可疑的候选（文字渲染链）。

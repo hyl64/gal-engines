@@ -489,6 +489,14 @@ int NSOggLoad(lua_State *state)
     int no = luaL_checkinteger( state, 1 );
     const char *str = luaL_checkstring( state, 2 );
 
+    /* ONS_NO_OGGLOAD=1: skip the Lua-side OGG load entirely.  Diagnostic for
+     * whether the vorbis path is the only thing corrupting the heap -- and, if it
+     * is, a working mitigation: the game keeps running without this BGM path. */
+    {
+        const char *e = getenv("ONS_NO_OGGLOAD");
+        if (e && *e) return 0;
+    }
+
     sprintf(cmd_buf, "_dwaveload %d \"%s\"", no, str);
     lh->sh->enterExternalScript(cmd_buf);
     lh->ons->runScript();

@@ -543,13 +543,17 @@ namespace
 		std::vector<std::string> autoplayKeys; // scripted input tokens
 		std::string shotTitle;
 		std::string shotScene;
+		std::string shotBackground;
 		std::string shotDir;
+		std::string extraDir;       // --extra-dir: another root to resolve assets from
+		int frameBudget = 0;        // --frame-budget: how many frames to run (0 = default)
 		int quitAfterPages = 0;
 		// audio and effects: opt-in, so the still-frame baseline stays exactly
 		// what it was
 		std::string audioCapture;   // --audio-capture <file.wav>
 		double audioSeconds = 8.0;  // --audio-seconds N
 		bool audio = false;         // --audio: wire the tags, no WAV
+		bool noAudio = false;       // --no-audio: the interactive window stays silent
 		bool fx = false;            // --fx: wire the effect tags
 		double fxAt = -1;           // --fx-at: sample the effects at this offset
 		int width = 1600;
@@ -761,6 +765,7 @@ namespace
 // numbers measured by decoding each track on its own.
 
 #include "../src/audio/audio.h"
+#include "../src/audio/device.h"
 
 namespace
 {
@@ -795,6 +800,10 @@ namespace
 		bool Open(const Config& config, std::string& error);
 		void Close();
 		bool open() const { return m_opened; }
+		// The device path needs the engine itself and the rate it was opened at.
+		artemis::audio::Engine* engine() { return &m_engine; }
+		const artemis::audio::Engine* engine() const { return &m_engine; }
+		int sampleRate() const { return m_config.sampleRate; }
 
 		// one tag, already expanded by the interpreter; false when it could not be
 		// acted on (and `note` says why)
@@ -1277,6 +1286,7 @@ namespace
 		long long fades = 0;
 		long long unmatched = 0;
 		std::vector<std::string> notes;
+		std::vector<std::string> pageLog;
 	};
 
 	struct LayerAnim
@@ -1949,10 +1959,17 @@ namespace
 		size_t choiceTotal = 0;
 		int chosen = -1;
 		std::vector<std::string> notes;
+		std::vector<std::string> pageLog;
 		std::vector<std::string> audioLines;
 		double audioRms = 0;
 		double audioPeak = 0;
 		long long audioFrames = 0;
+		long long engineFrames = 0;
+		int streamsMax = 0;
+		double streamsAvg = 0;
+		long long streamSamples = 0;
+		size_t audioTracks = 0;
+		std::string currentBgm;
 		bool audioSilent = true;
 		int msgspeed = 30;
 		int width = 0;
@@ -1993,10 +2010,24 @@ namespace
 		std::string Reveal(const std::string& text, int64_t ms) override;
 		int64_t RevealMs(const std::string& text) override;
 		void Compose(artemis::Canvas& canvas, int64_t nowMs) override;
+		bool HasBackground() const override { return m_stage->hasBackgroundImage(); }
+
 		void OnFrame(int64_t nowMs) override
 		{
 			m_now = nowMs;
 			m_sink.now = nowMs;
+			// The device pulls the mixer on its own thread, so the only honest
+			// statistics are the mixer's own: how many streams are sounding right
+			// now, and how much it has mixed.  Sampling once per frame is enough to
+			// see BGM + SE + voice overlap.
+			if(m_audioOpen)
+			{
+				const int active = m_audio.engine()->ActiveStreams();
+				if(active > m_streamsMax)
+					m_streamsMax = active;
+				m_streamsTotal += active;
+				m_streamSamples++;
+			}
 		}
 
 		int RegionCount() const override { return (int)m_vm->clickRegions().size(); }
@@ -2014,6 +2045,10 @@ namespace
 		bool ChoiceRect(int index, int& left, int& top, int& width, int& height) const override;
 		void Choose(int index) override;
 		void MixAudio(float* out, int frames) override;
+		bool OpenAudioDevice(std::string& info, std::string& fallback) override;
+		void CloseAudioDevice() override;
+		void AudioStats(std::vector<std::string>& out) override;
+		const std::string& deviceInfo() const;
 
 		// for the report
 		const artemis::Vm& vm() const { return *m_vm; }
@@ -2021,11 +2056,27 @@ namespace
 		const std::string& bootSummary() const { return m_vm->bootSummary(); }
 		const std::string& menuTarget() const { return m_menuTarget; }
 		const std::vector<std::string>& notes() const { return m_notes; }
+		const std::vector<std::string>& pageLog() const { return m_pageLog; }
 		const std::vector<std::string>& audioLines() const { return m_audioLines; }
 		int msgspeed() const { return m_msgspeed; }
 		size_t choiceTotal() const { return m_choiceTotal; }
 		int chosen() const { return m_chosen; }
 		double audioRms() const { return m_audioRms; }
+		int streamsMax() const { return m_streamsMax; }
+		long long streamSamples() const { return m_streamSamples; }
+		double streamsAvg() const
+		{
+			return m_streamSamples > 0 ? (double)m_streamsTotal / (double)m_streamSamples : 0;
+		}
+		long long engineFrames() const
+		{
+			return m_audioOpen ? m_audio.engine()->FramesMixed() : 0;
+		}
+		std::string currentBgm() const
+		{
+			return m_audioOpen ? m_audio.engine()->CurrentBgm() : std::string();
+		}
+		size_t trackCount() const { return m_audio.tracks().size(); }
 		double audioPeak() const { return m_audioPeak; }
 		long long audioFrames() const { return m_audioFrames; }
 		int width() const { return m_stage->width(); }
@@ -2073,9 +2124,13 @@ namespace
 		FxDriver m_fx;
 		AudioBridge m_audio;
 		bool m_audioOpen = false;
+		artemis::audio::Device m_device;
+		artemis::audio::DeviceTarget m_target;
+		std::string m_deviceInfo;
 		Sink m_sink;
 		artemis::PageText m_page;
 		artemis::Canvas m_scratch;
+		std::vector<std::string> m_pageLog;
 		std::string m_revealText;
 		artemis::fx::Text m_segmented;
 		int m_msgspeed = 30;
@@ -2092,6 +2147,9 @@ namespace
 		long long m_audioFrames = 0;
 		long long m_audioSamples = 0;
 		int64_t m_now = 0;
+		int m_streamsMax = 0;
+		long long m_streamsTotal = 0;
+		long long m_streamSamples = 0;
 	};
 
 	bool InteractiveHost::Open(const Options& options, std::string& error)
@@ -2100,6 +2158,8 @@ namespace
 		if(!options.archive.empty() && !m_assets.AddArchive(options.archive, error))
 			return false;
 		if(!options.dataDir.empty() && !m_assets.AddDirectory(options.dataDir, error))
+			return false;
+		if(!options.extraDir.empty() && !m_assets.AddDirectory(options.extraDir, error))
 			return false;
 		if(m_assets.empty())
 		{
@@ -2162,9 +2222,14 @@ namespace
 
 		if(options.audio || !options.audioCapture.empty())
 		{
+			// the engine has to be opened at the device's own rate: the mixer
+			// resamples the shipped 44100 material to whatever the machine runs at
+			m_target = artemis::audio::Device::QueryDefault();
 			AudioBridge::Config audioConfig;
 			audioConfig.assets = &m_assets;
 			audioConfig.workDir = "/tmp/agame-audio";
+			if(m_target.available && m_target.sampleRate >= 8000)
+				audioConfig.sampleRate = (int)m_target.sampleRate;
 			std::string audioError;
 			if(m_audio.Open(audioConfig, audioError))
 			{
@@ -2219,6 +2284,8 @@ namespace
 					fprintf(stderr, "[page] %s:%d speaker=\"%s\" %zu chars\n",
 						event.file.c_str(), event.line, event.speaker.c_str(),
 						event.text.size());
+				if(m_pageLog.size() < 12)
+					m_pageLog.push_back(event.text);
 				artemis::PlayHost::Step step;
 				step.kind = artemis::PlayHost::Step::Kind::Page;
 				step.text = event.text;
@@ -2250,8 +2317,23 @@ namespace
 			{
 				// [stop] parks the script: the screen stays, its buttons are live
 				if(m_options.verbose)
+				{
 					fprintf(stderr, "[idle] %s:%d [stop], %zu click region(s)\n",
 						event.file.c_str(), event.line, m_vm->clickRegions().size());
+					for(size_t i = 0; i < m_vm->clickRegions().size(); i++)
+					{
+						int left = 0, top = 0, width = 0, height = 0;
+						const bool boxed = m_vm->RegionBox((int)i, left, top, width, height);
+						const artemis::Vm::ClickRegion& region = m_vm->clickRegions()[i];
+						fprintf(stderr, "   region %zu %-5s box=%d %d,%d %dx%d image=%d "
+							"threshold=%d -> %s:%s\n", i, region.id.c_str(), (int)boxed, left,
+							top, width, height, (int)region.hasImage, region.threshold,
+							region.file.c_str(), region.label.c_str());
+					}
+					if(!m_vm->assetFailuresText().empty())
+						fprintf(stderr, "   asset failures: %s\n",
+							m_vm->assetFailuresText().c_str());
+				}
 				artemis::PlayHost::Step step;
 				step.kind = artemis::PlayHost::Step::Kind::Idle;
 				return step;
@@ -2370,6 +2452,64 @@ namespace
 		}
 	}
 
+	bool InteractiveHost::OpenAudioDevice(std::string& info, std::string& fallback)
+	{
+		if(!m_audioOpen)
+		{
+			fallback = "the mixer is not open (no assets for the ogg members)";
+			return false;
+		}
+		std::string reason;
+		if(!m_target.available)
+		{
+			fallback = m_target.reason.empty() ? "no default output device" : m_target.reason;
+			return false;
+		}
+		if(!m_device.Open(m_audio.engine(), m_target, &reason))
+		{
+			fallback = reason;
+			return false;
+		}
+		if(!m_device.Start(&reason))
+		{
+			fallback = reason;
+			m_device.Close();
+			return false;
+		}
+		char line[256];
+		snprintf(line, sizeof line, "%s, %.0f Hz, %d ch, buffer %d frames (CoreAudio)",
+			m_device.deviceName().c_str(), m_device.SampleRate(), m_target.channels,
+			m_device.BufferFrames());
+		m_deviceInfo = line;
+		info = m_deviceInfo;
+		return true;
+	}
+
+	void InteractiveHost::CloseAudioDevice()
+	{
+		m_device.Stop();
+		m_device.Close();
+	}
+
+	void InteractiveHost::AudioStats(std::vector<std::string>& out)
+	{
+		m_device.RefreshStats();
+		const artemis::audio::CallbackStats& stats = m_device.Stats();
+		char line[512];
+		snprintf(line, sizeof line,
+			"callback: %llu call(s), %llu frame(s), underruns %llu, interval p50 %.3f ms "
+			"p99 %.3f ms max %.3f ms jitter %.3f ms",
+			(unsigned long long)stats.callbacks, (unsigned long long)stats.frames,
+			(unsigned long long)stats.underruns, stats.intervalP50Ms, stats.intervalP99Ms,
+			stats.intervalMaxMs, stats.intervalJitterMs);
+		out.push_back(line);
+		snprintf(line, sizeof line, "mix work inside the callback: p50 %.1f us, p99 %.1f us, "
+			"max %.1f us", stats.workP50Us, stats.workP99Us, stats.workMaxUs);
+		out.push_back(line);
+	}
+
+	const std::string& InteractiveHost::deviceInfo() const { return m_deviceInfo; }
+
 	void InteractiveHost::MixAudio(float* out, int frames)
 	{
 		if(!m_audioOpen)
@@ -2397,9 +2537,13 @@ namespace
 	PlayRun RunInteractive(const Options& options);
 }
 
-static PlayRun RunInteractiveImpl(const Options& options)
+static PlayRun RunInteractiveImpl(const Options& optionsIn)
 {
 	PlayRun run;
+	// a running game has sound unless it is told not to; the still-frame path keeps
+	// its own default (silent) so its numbers do not move
+	Options options = optionsIn;
+	options.audio = !options.noAudio;
 	InteractiveHost host;
 	std::string error;
 	if(!host.Open(options, error))
@@ -2425,10 +2569,14 @@ static PlayRun RunInteractiveImpl(const Options& options)
 	play.script = options.autoplayKeys;
 	play.shotTitle = options.shotTitle;
 	play.shotScene = options.shotScene;
+	play.shotBackground = options.shotBackground;
 	play.shotDir = options.shotDir;
 	play.quitAfterPages = options.quitAfterPages;
 	play.hashFrames = options.hashFrames;
-	play.maxFrames = options.realTime ? host.fps() * 60 * 10 : 4000;
+	play.maxFrames = options.frameBudget > 0 ? options.frameBudget
+		: (options.realTime ? host.fps() * 60 * 10 : 4000);
+	play.verboseInput = options.verbose;
+	play.quitWhenOutOfInput = !options.realTime;
 	play.capturePath = options.audioCapture;
 	play.captureSeconds = options.audioSeconds;
 
@@ -2456,9 +2604,20 @@ static PlayRun RunInteractiveImpl(const Options& options)
 	run.audioPeak = host.audioPeak();
 	run.audioFrames = host.audioFrames();
 	run.audioSilent = host.audioPeak() < 1.0 / 32768.0;
-	for(size_t i = 0; i < host.vm().clickRegions().size() && i < 10; i++)
+	run.engineFrames = host.engineFrames();
+	run.streamsMax = host.streamsMax();
+	run.streamsAvg = host.streamsAvg();
+	run.streamSamples = host.streamSamples();
+	run.audioTracks = host.trackCount();
+	run.currentBgm = host.currentBgm();
+	run.pageLog = host.pageLog();
+	for(size_t i = 0; i < host.vm().clickRegions().size(); i++)
 	{
 		const artemis::Vm::ClickRegion& region = host.vm().clickRegions()[i];
+		if(region.id.empty())
+			run.points++;
+		if(i >= 10)
+			continue;
 		int left = 0, top = 0, width = 0, height = 0;
 		host.vm().RegionBox((int)i, left, top, width, height);
 		char line[384];
@@ -2467,8 +2626,6 @@ static PlayRun RunInteractiveImpl(const Options& options)
 			region.file.empty() ? "(this file)" : region.file.c_str(), region.label.c_str(),
 			region.call ? " (call=1, run as a jump)" : "");
 		run.regionText.push_back(line);
-		if(region.id.empty())
-			run.points++;
 	}
 	return run;
 }
@@ -2508,17 +2665,35 @@ namespace
 			printf("choices offered: %zu; chosen: %d\n", run.choiceTotal, run.chosen);
 
 		printf("\n--- timing -------------------------------------------------------------\n");
-		printf("frame time: avg %.3f ms, p50 %.3f ms, p95 %.3f ms, max %.3f ms over %d "
-			"frame(s)\n", stats.frameAvgMs, stats.frameP50Ms, stats.frameP95Ms,
-			stats.frameMaxMs, stats.frames);
+		printf("frame work (compose + upload + present): avg %.3f ms, p50 %.3f ms, p95 %.3f "
+			"ms, max %.3f ms over %d frame(s)\n", stats.frameAvgMs, stats.frameP50Ms,
+			stats.frameP95Ms, stats.frameMaxMs, stats.frames);
+		printf("frame interval (wall, start to start): p50 %.2f ms, p95 %.2f ms%s\n",
+			stats.intervalP50Ms, stats.intervalP95Ms,
+			stats.realTime ? " (paced to the game's FPS)" : " (virtual clock)");
 		printf("click -> page: avg %.2f ms, max %.2f ms over %d sample(s)\n",
 			stats.latencyAvgMs, stats.latencyMaxMs, stats.latencySamples);
 		printf("wall time: %.1f ms; peak RSS: %.1f MB\n", stats.wallMs,
 			(double)stats.peakRss / (1024.0 * 1024.0));
 
 		printf("\n--- sound --------------------------------------------------------------\n");
-		printf("frames mixed: %lld; rms=%.4f peak=%.3f%s\n", run.audioFrames, run.audioRms,
-			run.audioPeak, run.audioSilent ? " SILENT" : "");
+		const std::string deviceInfo = stats.audioDeviceInfo.empty()
+			? std::string("(none - mixed in the render loop)") : stats.audioDeviceInfo;
+		printf("device: %s\n", deviceInfo.c_str());
+		if(!stats.audioFallback.empty())
+			printf("fallback reason: %s\n", stats.audioFallback.c_str());
+		const std::string bgm = run.currentBgm.empty()
+			? std::string("no BGM named")
+			: ("BGM \"" + run.currentBgm + "\"");
+		printf("mixer: %lld frame(s) pulled, %zu track(s) resolved, %s\n",
+			(long long)run.engineFrames, run.audioTracks, bgm.c_str());
+		printf("streams sounding: max %d, average %.2f over %lld sample(s)\n",
+			run.streamsMax, run.streamsAvg, run.streamSamples);
+		for(const std::string& line : stats.audioStats)
+			printf("    %s\n", line.c_str());
+		if(!stats.audioDevice)
+			printf("frames mixed in the loop: %lld; rms=%.4f peak=%.3f%s\n", run.audioFrames,
+				run.audioRms, run.audioPeak, run.audioSilent ? " SILENT" : "");
 		for(const std::string& line : run.audioLines)
 			printf("    %s\n", line.c_str());
 		if(!run.notes.empty())
@@ -4646,6 +4821,287 @@ namespace
 		else
 			Skip(tally, "audio-capture", "no corpus");
 
+		// 12. the interactive window: the release's own boot -> title -> story flow,
+		// driven by scripted input.  `SDL_VIDEODRIVER=dummy` + the virtual clock make
+		// this deterministic and fast; the same code path opens a real window.
+		{
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.script = "scenario/scene.iet";
+			play.maxPages = 0;
+			play.quitAfterPages = 1;
+			play.autoplayKeys.push_back("space");
+			play.shotTitle = "/tmp/agame-selftest-title.png";
+			play.shotScene = "/tmp/agame-selftest-scene.png";
+			const PlayRun run = RunInteractive(play);
+			// every click must have done something: a region, a finished reveal, or a
+			// page.  A click that did none of those is the "clicked and nothing
+			// happened" bug, and it is checked rather than assumed.
+			const bool allClicksCounted = run.stats.clicks == run.stats.regionClicks +
+				run.stats.completedReveals + run.stats.advances;
+			const bool ok = run.ok && run.stats.idleSeen && run.regions >= 4 &&
+				run.pages >= 1 && FileExists(play.shotTitle) && FileExists(play.shotScene) &&
+				allClicksCounted;
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"boot -> %s (idle, %zu buttons) -> click start -> %d page(s); shots title=%d "
+				"scene=%d; clicks=%d region=%d completed=%d advanced=%d", run.menuTarget.c_str(),
+				run.regions, run.pages, (int)FileExists(play.shotTitle),
+				(int)FileExists(play.shotScene), run.stats.clicks, run.stats.regionClicks,
+				run.stats.completedReveals, run.stats.advances);
+			if(ok)
+				Pass(tally, "play-title-flow", detail);
+			else
+				Fail(tally, "play-title-flow",
+					std::string(detail) + (run.error.empty() ? "" : (" | " + run.error)));
+		}
+
+		// 12b. the chapter screen: its click targets are `[point]` rectangles with no
+		// image at all, and clicking one jumps to that chapter.  The button that gets
+		// there is the title's own third button, at its own coordinates.
+		{
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.script = "scenario/scene.iet";
+			play.maxPages = 0;
+			play.quitAfterPages = 1;
+			// 60.3 (chapter) sits at 410,520 and is 204x54: click its middle
+			play.autoplayKeys.push_back("click:512:547");
+			const PlayRun run = RunInteractive(play);
+			const bool ok = run.ok && run.points >= 6 && run.stats.idleSeen;
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"chapter screen: %zu point region(s) of %zu, idle=%d", run.points, run.regions,
+				(int)run.stats.idleSeen);
+			if(ok)
+				Pass(tally, "play-chapter-points", detail);
+			else
+				Fail(tally, "play-chapter-points",
+					std::string(detail) + (run.error.empty() ? "" : (" | " + run.error)));
+		}
+
+		// 13. a click while the page is still typing completes the page, it does not
+		// skip it: one click, one page, and the reveal finished on that click
+		{
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.script = "scenario/scene.iet";
+			play.maxPages = 0;
+			play.startAtMenu = false;
+			play.autoplayKeys.push_back("space"); // at the title: no
+			// the title needs a click first when the menu is asked for; here the run
+			// starts in the story, so the first click lands on a page mid-reveal
+			play.autoplayKeys.clear();
+			play.autoplayKeys.push_back("space");
+			play.quitAfterPages = 1;
+			const PlayRun run = RunInteractive(play);
+			const bool ok = run.ok && run.pages == 1 && run.stats.completedReveals == 1 &&
+				run.stats.advances == 0 && run.stats.frames >= 1;
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"one click mid-reveal: pages=%d completed=%d advances=%d frames=%d",
+				run.pages, run.stats.completedReveals, run.stats.advances, run.stats.frames);
+			if(ok)
+				Pass(tally, "play-click-completes", detail);
+			else
+				Fail(tally, "play-click-completes",
+					std::string(detail) + (run.error.empty() ? "" : (" | " + run.error)));
+		}
+
+		// 14. five pages by clicks, and the same run twice is the same pixels: a
+		// frame-hash chain is a harder regression check than a screenshot
+		{
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.script = "scenario/scene.iet";
+			play.maxPages = 0;
+			play.startAtMenu = false;
+			play.hashFrames = true;
+			play.quitAfterPages = 5;
+			for(int i = 0; i < 5; i++)
+			{
+				play.autoplayKeys.push_back("wait:2000");
+				play.autoplayKeys.push_back("space");
+			}
+			const PlayRun first = RunInteractive(play);
+			const PlayRun second = RunInteractive(play);
+			const bool same = first.stats.frameHashes == second.stats.frameHashes &&
+				!first.stats.frameHashes.empty();
+			const bool ok = first.ok && first.pages >= 5 && first.stats.advances >= 4 && same &&
+				first.stats.frameHashes.size() == second.stats.frameHashes.size();
+			uint64_t fold = 0;
+			for(uint64_t hash : first.stats.frameHashes)
+				fold = fold * 1099511628211ull + hash;
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"pages=%d advances=%d frames=%zu hashes equal=%d chain=%016llx",
+				first.pages, first.stats.advances, first.stats.frameHashes.size(), (int)same,
+				(unsigned long long)fold);
+			if(ok)
+				Pass(tally, "play-advance-5-deterministic", detail);
+			else
+				Fail(tally, "play-advance-5-deterministic",
+					std::string(detail) + (first.error.empty() ? "" : (" | " + first.error)));
+		}
+
+		// 15. a choice end to end.  The all-ages scene has no choice point and the
+		// engine's own choice UI is Lua, so the fixture below is written for this
+		// test and kept out of the corpus: three options, pick the second, and the
+		// page that appears must be the second road's.
+		{
+			const std::string dir = "/tmp/agame-fixture";
+			mkdir(dir.c_str(), 0755);
+			const std::string path = dir + "/choice_fixture.iet";
+			FILE* file = fopen(path.c_str(), "wb");
+			bool written = false;
+			if(file != nullptr)
+			{
+				const char* text =
+					"*start\n"
+					"[select file=\"choice_fixture.iet\" pre=\"route\"]\n"
+					"\n"
+					"*route_1\n"
+					"一つ目の道を選んだ。\n"
+					"[rp]\n"
+					"[jump label=\"done\"]\n"
+					"\n"
+					"*route_2\n"
+					"二つ目の道を選んだ。\n"
+					"[rp]\n"
+					"[jump label=\"done\"]\n"
+					"\n"
+					"*route_3\n"
+					"三つ目の道を選んだ。\n"
+					"[rp]\n"
+					"[jump label=\"done\"]\n"
+					"\n"
+					"*done\n"
+					"[stop]\n";
+				written = fwrite(text, 1, strlen(text), file) == strlen(text);
+				fclose(file);
+			}
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.extraDir = dir;
+			play.script = "choice_fixture.iet";
+			play.startAtMenu = false;
+			play.maxPages = 0;
+			play.quitAfterPages = 1;
+			play.autoplayKeys.push_back("choice:2");
+			play.autoplayKeys.push_back("space");
+			const PlayRun run = RunInteractive(play);
+			bool right = false;
+			for(const std::string& page : run.pageLog)
+				if(page.find("二つ目の道") != std::string::npos)
+					right = true;
+			const bool ok = written && run.ok && run.choiceTotal == 3 && run.chosen == 2 &&
+				right && run.pages >= 1;
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"fixture %s: options=%zu chosen=%d page=\"%s\" pages=%d", written ? "ok" : "NOT "
+				"WRITTEN", run.choiceTotal, run.chosen,
+				run.pageLog.empty() ? "(none)" : run.pageLog.front().c_str(), run.pages);
+			if(ok)
+				Pass(tally, "play-choice-endtoend", detail);
+			else
+				Fail(tally, "play-choice-endtoend",
+					std::string(detail) + (run.error.empty() ? "" : (" | " + run.error)));
+		}
+
+		// 15b. sound overlap: the mixer's stream count is the proof.  The all-ages
+		// release ships no voice files, so this fixture uses what it has - a BGM and
+		// two sound effects started together - and asks the mixer how many streams it
+		// was actually running.  (The voice channel is the same code path with a
+		// different group; this corpus has nothing to put in it.)
+		{
+			const std::string dir = "/tmp/agame-fixture";
+			mkdir(dir.c_str(), 0755);
+			const std::string path = dir + "/audio_fixture.iet";
+			FILE* file = fopen(path.c_str(), "wb");
+			bool written = false;
+			if(file != nullptr)
+			{
+				const char* text =
+					"*start\n"
+					"[bgm file=\"kujira\"]\n"
+					"[seplay file=\"se/kisya\"]\n"
+					"[seplay file=\"se/para\"]\n"
+					"三つの音が同時に鳴っている。\n"
+					"[rp]\n"
+					"[stop]\n";
+				written = fwrite(text, 1, strlen(text), file) == strlen(text);
+				fclose(file);
+			}
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.extraDir = dir;
+			play.script = "audio_fixture.iet";
+			play.startAtMenu = false;
+			play.maxPages = 0;
+			play.quitAfterPages = 1;
+			play.autoplayKeys.push_back("wait:600");
+			play.autoplayKeys.push_back("space");
+			const PlayRun run = RunInteractive(play);
+			const bool ok = written && run.ok && run.audioTracks >= 3 && run.streamsMax >= 3 &&
+				run.engineFrames > 0;
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"bgm + 2 se: tracks=%zu streams max=%d avg=%.2f frames=%lld bgm=\"%s\"",
+				run.audioTracks, run.streamsMax, run.streamsAvg,
+				(long long)run.engineFrames, run.currentBgm.c_str());
+			if(ok)
+				Pass(tally, "play-sound-overlap", detail);
+			else
+				Fail(tally, "play-sound-overlap",
+					std::string(detail) + (run.error.empty() ? "" : (" | " + run.error)));
+		}
+
+		// 16. sound: a real device when there is one, and a stated reason when there
+		// is not.  The mixer's own counters are the evidence - tracks resolved, the
+		// BGM that is playing, and how many streams overlapped.
+		if(!data.empty() && FileExists(scenePath) && DirExists(extracted))
+		{
+			Options play = options;
+			play.play = true;
+			play.dataDir = extracted;
+			play.script = "scenario/scene.iet";
+			play.maxPages = 0;
+			play.startAtMenu = false;
+			play.quitAfterPages = 2;
+			play.autoplayKeys.push_back("wait:2000");
+			play.autoplayKeys.push_back("space");
+			play.autoplayKeys.push_back("wait:2000");
+			play.autoplayKeys.push_back("space");
+			const PlayRun run = RunInteractive(play);
+			const bool deviceOrReason = run.stats.audioDevice
+				? !run.stats.audioDeviceInfo.empty()
+				: !run.stats.audioFallback.empty();
+			const bool ok = run.ok && deviceOrReason && run.audioTracks >= 1 &&
+				run.engineFrames > 0 && run.pages >= 1 &&
+				(run.streamsMax >= 1 || !run.stats.audioDevice);
+			char detail[512];
+			snprintf(detail, sizeof detail,
+				"device=%s tracks=%zu bgm=\"%s\" frames=%lld streams max=%d%s",
+				run.stats.audioDevice ? run.stats.audioDeviceInfo.c_str()
+					: run.stats.audioFallback.c_str(),
+				run.audioTracks, run.currentBgm.c_str(), (long long)run.engineFrames,
+				run.streamsMax,
+				run.stats.audioDevice ? "" : (run.audioSilent ? " LOOP-MIX SILENT" : " loop-mix"));
+			if(ok)
+				Pass(tally, "play-sound-device", detail);
+			else
+				Fail(tally, "play-sound-device",
+					std::string(detail) + (run.error.empty() ? "" : (" | " + run.error)));
+		}
+		else
+			Skip(tally, "play-sound-device", "no corpus");
+
 		// 11. the input wiring the real scripts declare: VK code -> script label
 		if(!data.empty() && FileExists(scenePath) && DirExists(extracted))
 		{
@@ -4773,6 +5229,8 @@ int main(int argc, char** argv)
 			options.audioSeconds = atof(argv[++i]);
 		else if(arg == "--audio")
 			options.audio = true;
+		else if(arg == "--no-audio")
+			options.noAudio = true;
 		else if(arg == "--fx")
 			options.fx = true;
 		else if(arg == "--fx-at" && hasValue)
@@ -4814,6 +5272,11 @@ int main(int argc, char** argv)
 			options.shotScene = argv[++i];
 			options.play = true;
 		}
+		else if(arg == "--shot-background" && hasValue)
+		{
+			options.shotBackground = argv[++i];
+			options.play = true;
+		}
 		else if(arg == "--shot-dir" && hasValue)
 		{
 			options.shotDir = argv[++i];
@@ -4821,6 +5284,10 @@ int main(int argc, char** argv)
 		}
 		else if(arg == "--play-pages" && hasValue)
 			options.quitAfterPages = atoi(argv[++i]);
+		else if(arg == "--extra-dir" && hasValue)
+			options.extraDir = argv[++i];
+		else if(arg == "--frame-budget" && hasValue)
+			options.frameBudget = atoi(argv[++i]);
 		else if(arg == "--size" && hasValue)
 		{
 			options.size = argv[++i];

@@ -1,155 +1,140 @@
-# 五引擎在 macOS arm64 上的状态（2026-10-25）
+# 五个引擎的状态（2026-10-25）
 
-本文件只写**跑出来的事实**，每条都附可复现的命令。
+本文件只写**跑出来的事实**。每条结论后面要么是命令，要么是对应的验收记录；
+没有跑通的不写「支持」，跑了一半的写明「跑到哪」。
+
+```bash
+./build-all.sh --check --data <数据目录>     # 通过 11，失败 0
+```
 
 ## 总览
 
-| 引擎 | 移植 | 真实数据 | 可玩 | 验收 |
+| 引擎 | 移植形态 | 真实作品 | 可玩程度 | 验收证据 |
 |---|---|---|---|---|
-| ① NScripter → OnscripterYuri | ✅ 原生 arm64 | ✅ 官方 SDK 5 套 | — | `gal verify` 通过；影片后端 8/8；存读档往返 PASS |
-| ② KiriKiri → Kirikiroid2 | ✅ 原生 arm64 | ✅ 真实 KAG 游戏工程 | **✅ 是** | 截图 + 零报错长跑 |
-| ③ RealLive → RLVM | ✅ 原生 arm64（SDL3） | ✅ CLANNAD Full Voice | **✅ app + DMG** | 260/260 单测；截图 |
-| ④ Ethornell → OpenBGI | ✅ 原生 arm64 | ✅ 官方商业体验版 | 可运行 | 截图 + 画面导出 |
-| ⑤ Artemis（从零重写） | ✅ 原生 arm64 | ✅ 3 份真实归档（pf6/pf8） | 归档层 | 五层自证 + 归档 4698/4698 哈希一致 |
+| ① NScripter → OnscripterYuri | arm64 原生，CMake | 官方 SDK 5 套 + 《トライアンソロジー》官方体验版 | 标题→Start→OP 影片→剧情，日文正文正常 | 85 秒连续运行零崩溃；存档写盘；存读档跨进程往返 |
+| ② KiriKiri → Kirikiroid2 | arm64 原生，CMake | 真实 KAG 工程 + 官方 KAG3 demo | 标题→点击→整章正文，目录与 `data.xp3` 两种形态 | story/demo/save/video/audio/perf 六项全绿 |
+| ③ RealLive → RLVM | arm64 原生，scons | CLANNAD Full Voice（231 剧本，4 GB） | 标题、立绘、文字、中文台词、系统菜单、BGM | 260/260 单元测试；app bundle + DMG |
+| ④ Ethornell → OpenBGI | arm64 原生，自带 Makefile | 《遥か碧の花嫁に》官方体验版 | 引导→标题画面完整渲染 | 1920×1080 标题帧（45 万色）；列出 profile 1.669 |
+| ⑤ Artemis（从零重写） | arm64 原生，约 1.5 万行 | 三套真实归档（pf6/pf8，含 2,884 句台词） | 标题→Start→正文 60 FPS；存档可续跑 | 11 个工具 9 项自检；独立验收 30 项 0 失败 |
 
-## 一条命令验证
+**五个引擎都在同一台 M1 上跑真实数据，没有 Wine、没有 Rosetta、没有虚拟机。**
 
-```bash
-cd ~/Documents/gal-engines
-./build-all.sh --check                              # 四引擎构建 + 自检
-./OnscripterYuri/test/video/run_acceptance.sh       # 影片后端 8 项
-./harness/run_savetest.sh                           # 存读档往返
-./bench/bench.sh OnscripterYuri/build/onsyuri testdata/lifegame 20 -- \
-    --root . --enc:sjis --window                    # 效率基线
-```
-
-```
-✓ nscripter   official demo still running after 3s
-✓ kirikiri    KAG3 displays its first line without script errors
-✓ bgi         the trial reaches profile 1.669
-✓ artemis     pfs, ast, runtime and 12 rendered fixture frames (not a real game)
-通过 4，失败 0
-```
-
-## 各引擎的证据
-
-### ② KiriKiri（最完整）
+## 构建与自检
 
 ```bash
-cd testdata/kag-game/data
-KRKR_LOOP_SECONDS=14 KRKR_AUTO_CLICK="1131,446,5000" \
-  SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy \
-  ../../kirikiroid2-mac/build/krkrrun startup.tjs --screenshot out.bmp
+brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
+             lua jpeg-turbo libpng lz4 ffmpeg bzip2 boost gettext libogg \
+             libvorbis libsndfile libarchive opencv@4
+
+./build-all.sh                          # 五个引擎构建 + 全部自检
+./build-all.sh --check                  # 只跑自检
+./build-all.sh --data ~/gal-data        # 数据放在别处
+./build-all.sh --skip kirikiri-perf     # 临时跳过某一项
 ```
 
-- 标题画面 → 点 `start` → 进入 `1.ks` 正文 → 对话框显示台词（`screenshots/real-game-story.png`）
-- 音频：`opened, totalTime=220.54`、`playing, status=1`
-- **可以直接跑 `data.xp3`**（真实游戏的发布形态）：`krkrrun game.xp3`
-- **管理器也接受归档**：`gal add game.xp3` → 加进库 → `gal play` / `gal verify` 都能用
-- 50 秒 / 30 次点击长跑**零报错**
+没有游戏数据时，需要数据的检查报「跳过」而不是失败——**一个全新 clone 必须能构建，
+并且诚实地说出哪一项没法验证**。CI（GitHub Actions，macos-14 arm64）跑的就是这条链。
 
-### ④ Ethornell
+## 各引擎的能力与证据
+
+### ① NScripter — 五套官方数据 + 一款官方体验版
+
+- **官方 SDK 5 套**全部进入主循环；`gal verify` 全绿。
+- **《トライアンソロジー ～三面鏡の国のアリス～》官方体验版**：启动 → 标题 → Start →
+  OP 影片 → 剧情场景，日文正文正常排版，85 秒连续运行零崩溃。
+- **存档**：`savedata/gloval.sav`、`kidoku.dat`、`NScrllog.dat` 均落盘；
+  [harness/run_savetest.sh](../harness/run_savetest.sh) 证明**跨进程往返**——
+  前一个进程被 `kill -9`，新进程仍读回变量。
+- **影片**：AVFoundation 主路 + libmpv 兜底（dlopen，无编译期依赖）；
+  `wcmpg.dll` 协议（`open/setloop/setx/sety/play/pause/close`）从引擎的 BaseReader 读档案，
+  所以 `arc\`、`arc4\` 里的影片能取出来。[证据](../OnscripterYuri/mpvdev/EVIDENCE.md)
+- **踩过的坑**：数据本身残缺（zip 只解出一半，`00.ns2` 记录 223 MB、实际 177 MB）——
+  按 HTTP Range 只取中央目录、再按 member 偏移重新下载才修好；
+  引擎侧修了 `setwindow3` 字号、字距不得小于字号、`tateyoko`、文字原点缩放、
+  `savedir` 自动建目录、AVFoundation 双 reader 的 SIGBUS。
+- **未完**：文字画在屏幕顶部而非对话框内（`ONS_NO_LUA_TEXT=1` 让游戏自己的窗口设置不生效）；
+  `setloop` 的画面上屏；编号存档槽未测。
+
+### ② KiriKiri — 一款真实 KAG 作品，整章可玩
+
+- **真实 KAG 工程**：标题 → 点击 → 进入正文 → 多句台词，**目录与打包成 `data.xp3` 两种形态都过**。
+- **官方 KiriKiri SDL2 / KAG3 demo**：不同分辨率、JPEG + TLG 素材、交叉淡入、
+  TJS 雪花插件跑在 Timer 上、超链接菜单。
+- **存档**：书签是「缩略图 + 偏移写入的结构化数据」，写入与读回均验证。
+- **影片**：`VideoOverlay` 真的解码上屏（ffmpeg），音轨走同一条时间线。
+- **音频**：暂停、`[ws]` 等播放结束、SE 与 BGM 同时、每缓冲音量、淡入淡出。
+- **帧率**：两个真实工程都保持可玩帧率。
+- **踩过的坑**（都是引擎自身的缺陷）：`EventEnable` 未初始化让**所有事件被丢弃**；
+  `InvokeEvents()` 空实现；`TVPPostEvent` 自己泵队列导致重入；图层销毁时鼠标捕获悬空；
+  日文错误信息用 `%ls` 在 C locale 下**什么都不打印**；纹理路径把每种图片格式都判成 PVR；
+  `Dictionary.saveStruct` 宏不配对从未注册；`patch.xp3` 不覆盖基础归档。
+
+### ③ RealLive — CLANNAD 跑起来了
+
+- **260/260 单元测试**通过。
+- 真实数据 CLANNAD Full Voice（中文化，231 剧本，4 GB）：**231 个剧本全部解析**，
+  标题画面、立绘、文字、中文台词、系统菜单全部渲染，BGM 可播。
+- 空闲 0.4% CPU / 8.7 MB RSS；`rlvm.app` 自包含，另有 DMG。
+- 技术路线：SDL 1.2 API 由 **sdl12-compat** 提供，底层 SDL3，渲染走 GL-on-Metal。
+- 细节见 [reallive.md](reallive.md)。
+
+### ④ Ethornell / BGI — 商业体验版的标题画面
+
+- 列出引擎 profile `1.669`，加载 `data*.arc`（2.1 GB，23 个归档）。
+- **1920×1080 标题画面完整渲染**（45 万色、日文正确），另有一帧送进窗口的证据。
+- 自带 darwin 后端：CPUID 仿真、SDL2 窗口、字体、音频、存档、UI、影片。
+- 踩过的坑：游戏表里缺**产品名**会让引导程序主动退出；`TVPInternalLoadTexture`
+  在 Windows 上是通用上传步骤，被当成「PVR 解码器」桩掉后**所有图片都读不出来**。
+
+### ⑤ Artemis — 从零写出来的实现
+
+- **11 个工具**：`pfstool asttool asbtool iettool fxtool audiotool savetool movietool agame arun pfsgame`，
+  其中 9 个有自检。
+- **三套真实归档**（作者/发行方免费发布）：pf6 125 条、pf8 2891 条、trial 604 MB；
+  **4698/4698 个文件的哈希**与归档索引独立算出的值一致。
+- **可玩**：标题 → Start → 正文，60 FPS（帧间隔 p50 = p95 = 17.00 ms），
+  真声卡出声 underrun 0；存档 → **换一个新解释器** → 读档续跑，逐页相同。
+- **格式覆盖**：第二部作品 21 个 `.ast` 解析出 **2,884 句台词**、3 个 `.asb`、4 个 `.ipt`；
+  `colortone`×141、`extrans`×34、`excall`×56 全部实现。
+- **鲁棒性**：五万条变异输入，5 个发现全部修掉（4 个同一类错误：**解析器相信了文件写的数字**），
+  含「条目名 `..\..\x` 会写到目录外」。
+- **性能**：打开 202 MB 归档 0.40 ms、常驻 +540 KiB、取 2 MB CG 0.12 ms；
+  逐字节 XOR 改分组后解档 792 → 5,405 MiB/s（先证等价：368,734 例 0 字节差异）。
+- **未完**：第二部作品的画面要 Lua 宿主 API；`.psb` 在三套语料里数量为 0，只做了识别；
+  `movie` 的解码器就绪但语料里没有视频成员；`scetween` 的槽位到图层未接。
+  见 [artemis 文档](../artemis/docs/) 与 [数据说明](../artemis/DATA_SOURCES.md)。
+
+## 统一管理器（gal）
 
 ```bash
-./gal/gal play "BGI官方体验版-遥か碧の花嫁に" --dump /tmp/x.bmp
+./gal/gal engines                  # 五个引擎与其二进制状态
+./gal/gal add <目录|data.xp3>      # 建库，按文件特征识别引擎
+./gal/gal play <名字>              # 启动
+./gal/gal verify <名字>            # 跑一遍并按行为判定（有 warn/error 白名单）
+./gal/gal play <名字> --dump x.bmp # 无头导出引擎画出的画面
+./gal/gal prep <名字>              # 把游戏里的影片转码到 _video/
+./gal/gal savetest <名字>          # 存读档往返
+./gal/gal doctor                   # 环境自检
 ```
 
-- 1920×1080 标题画面，45 万色（`openbgi/screenshots/haruka-title.png`）
-- 同一游戏送至窗口的画面（`openbgi/screenshots/window-presented.png`）
+管理器按脚本自身位置定位引擎目录（`GAL_ENGINES_ROOT` 可覆盖），换台机器、换个路径都能用。
 
-### ① NScripter
+## 数据从哪里来
 
-```bash
-cd testdata/lifegame && ../../OnscripterYuri/build/onsyuri --root . --enc:sjis
-```
+**本仓库不含任何游戏数据。** 全部是官方免费 SDK、官方体验版、作者免费发布的作品；
+获取方式、哈希与许可姿态见 [DATA.md](DATA.md)。
 
-5 套官方数据在库里，`gal verify` 全部「可以运行」。
+## 版本与可复现
 
-**影片**（2026-10-25 新增，`mpegplay`/`avi`/`movie` 三种都通了）：
+[engines.lock](../engines.lock) 记录每份引擎副本来自哪个提交，
+[scripts/sync-engines.sh](../scripts/sync-engines.sh) 按锁同步；
+本地修补放在 `patches/`，同步后自动重放，不会被下一次同步悄悄覆盖。
 
-| 路径 | 结果 |
-|---|---|
-| MPEG-1 → AVFoundation 硬解 | ✅ 3.00s @25fps，dump 帧 620 色 |
-| wmv2 AVI → AVFoundation 拒绝 → libmpv 兜底 | ✅ dump 帧 275 色彩条 |
-| MP4 直路径（无 map） | ✅ |
-| `video_map.json` 命中 → 播转码产物 | ✅ 改播 `_video/*.mp4` |
-| map 缺条目 → 回退原文件 | ✅ |
-| `click_stop=1` 点击中断 | ✅ 1.75s 停（片长 3.00s） |
-| `click_stop=0` 点击被吞 | ✅ 播满 3.66s |
-| 无影片的游戏回归 | ✅ CPU 1.0%，RSS 32.9MB |
+## 已知缺口（一条没藏）
 
-**存读档**：`./harness/run_savetest.sh` → `PASS`（变量跨 `kill -9` 恢复）。
-落盘位置：无 `<game>/sav/` 时只写私有格式，`gal launch` 现已预建该目录。
-
-**影片硬化**（2026-10-25 第二轮，15 项验收全绿）：`movie stop`/`pos`/`async`
-原先是 `not supported yet`，现已实现（async 走后台解码线程 + 主线程 16ms
-超时呈现；pos 只画进目标矩形）。音频能证明"真有声音"（解码后报
-`peak=0.129 rms=0.0883`，静音轨标 `(SILENT TRACK)`）。坏输入（损坏/0 字节/
-随机字节/不存在/map 指向缺失产物）全部 rc=0 不崩且脚本继续。性能：
-1080p60 **180/180 帧 0 丢帧**、720p30 900/900 实时、静态页 CPU **1.09%** /
-RSS **18MB**、prep 转码约 **2.6× 实时**。
-
-**剧情/对话流**（2026-10-25 修，这条最要紧）：影片原来会**打断剧情**——
-每部 `mpegplay`/`avi`/`movie` 播完都触发 `endCommand()`，后面的台词全丢。
-根因是返回值语义写反：`if (playMPEG(...)) endCommand();` 是"放不出来才结束"，
-上游恒返回 0，而第一版 macOS 后端把"播放成功"置成了 1。
-修完实测：影片前台词 → 影片 → 影片后台词，两段都渲染（dump 帧 1151 色、
-1533 个近白采样）；验收里用绿→影片→红的颜色判据固化（第 4b 项）。
-`test/video/run_acceptance.sh` **9/9 全绿**。
-
-诊断能力：`ONS_SURFACE_DUMP=<file.bmp>` 现在每帧都写引擎 surface。
-`savescreenshot` 在这个构建里静默不出文件、`ONS_VIDEO_DUMP` 只对影片生效，
-所以在此之前**文本/对话渲染根本无法在无头环境下检查**——这也是影片那个 bug
-一直没被发现的原因。
-
-### ⑤ Artemis（从零写）
-
-| 层 | 工具 |
-|---|---|
-| `.pfs` 归档（含 `.pfs.NNN` 分卷） | `pfstool` / `pfsgame` |
-| `.ast` 解析 | `asttool` |
-| 剧本执行 | `arun` |
-| 播放器（打字机） | `agame` |
-
-## 验收判定收紧之后（本轮）
-
-`gal verify` 原来只查「引擎/脚本失败」，所以**缺数据文件的游戏会被判为通过**。
-现在 `can't find file` / `*** can't` / `no decoder` / `invalid` 都算失败。
-
-收紧之后暴露的：
-
-| 条目 | 原因 | 性质 |
-|---|---|---|
-| `lifegame` + 4 个 NScripter 官方样本 | 缺 5 个光标 bmp（`uoncur.bmp` 等） | **数据不全**，引擎本身正常（8 秒仍在跑） |
-| `data`（真实 KAG 游戏） | `Dictionary.saveStruct` 不存在 → **已修**；现在卡在偏移写入 | 引擎缺陷（已修一半） |
-
-## 这一轮修掉的真 bug
-
-`tjsDictionary.cpp` 里 `saveStruct` 以 `TJS_BEGIN_NATIVE_METHOD_DECL` 开头、
-以 `TJS_END_NATIVE_STATIC_METHOD_DECL` 结尾——**宏不配对，方法没注册进类**。
-所有保存结构化数据的脚本都会报 `Member "saveStruct" does not exist`。
-
-修好后脚本可以正常保存 Dictionary。
-
-## 缺口（诚实记录）
-
-1. ~~③ RealLive~~ **已闭环**：`rlvm/` 复活为 arm64 app bundle，260/260 单元测试通过，
-   CLANNAD 的标题、立绘、中文台词与系统菜单均已渲染（见 [reallive.md](reallive.md)）。
-2. **② 台词点击推进**：KAG 的总入口 `window.onPrimaryClick()` 目前不会被调用——点击只给最前面的子层，primary 层收不到。已摸清完整链路，差最后一步。
-3. **⑤ 真实游戏数据**：Artemis 没有公开可获取的游戏，五个自检层是通过的，但没有真实数据验收。
-4. **② 音频**已接 SDL_mixer（能加载、能播放），但没有做过音量/淡入淡出的实测。
-5. **① 影片音频**：AVFoundation 音频轨预解码在部分容器上失败后按契约静默
-   降级（日志 `audio=silent`），画面不受影响。没做到"一定能出声"。
-6. **① GUI 菜单存档路径**未自动化：命令级 `savegame/loadgame` 已验证，
-   右键菜单走的同一套 `writeSaveFile/readSaveFile`，但没有点击注入测试。
-7. **② KiriKiri 存档写入失败**：`gal verify data` 报
-   `saveBookMarkToFile` → `ファイルに保存できません`，是该 port 的存储层
-   真实限制，不是本轮改动引入。
-
-## 一些踩过的坑（值得记住）
-
-- 平台层的**空构造函数**会让引擎的成员变量是垃圾值（`EventEnable` 未初始化 → 所有事件被丢弃）
-- **空的事件泵**（`InvokeEvents()` 空实现）→ 事件进队列后永不派发
-- **两个同名类定义**（Windows 的 `TimerImpl.cpp` 与 darwin 的实现）→ 引擎注册了 Windows 那个
-- **测试目录布局**：发行版游戏把 KAG 的 `system/`（含图片）放在游戏根目录
-- **`pkill`（SIGTERM）杀不掉 BGI 引擎**（它有信号处理），必须 `kill -9`
+1. **NScripter**：正文画在屏幕顶部而非对话框（待保留窗口设置、只跳过 `_print`）；
+   `setloop` 画面上屏；编号存档槽未测。
+2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
+3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
+4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。
+5. **通用**：GUI 菜单点击路径未自动验证（命令级路径与它共用同一套读写函数）。
