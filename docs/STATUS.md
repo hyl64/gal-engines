@@ -41,7 +41,16 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
 
 - **官方 SDK 5 套**全部进入主循环；`gal verify` 全绿。
 - **《トライアンソロジー ～三面鏡の国のアリス～》官方体验版**：启动 → 标题 → Start →
-  OP 影片 → 剧情场景，日文正文正常排版，85 秒连续运行零崩溃。
+  OP 影片 → 剧情场景，日文正文正常排版
+  （截图见 [test/video/shots](../OnscripterYuri/test/video/shots/)）。
+  本仓库的自动验收只能做到「启动并存活」：无头环境没有点击注入，游戏停在空文本层
+  （`[textlayer] ink=0`），实测连续 **110 秒不崩**。
+- **⚠️ 已知稳定性缺陷 C3**：在 **Release 构建 + 实际操作**（播影片、排版文本）下约
+  **25 秒必崩**；`ASan` 构建存活 260 秒以上。根因未定位，但已排除 7 条路径，问题类别
+  锁定为 use-after-free，崩溃点随运行游走（VideoToolbox / CoreMedia / libxpc /
+  SDL3 / libvorbis / IOSurface）。完整交接见
+  [C3-HANDOFF.md](../OnscripterYuri/C3-HANDOFF.md)——**这是本仓库目前唯一未解决的
+  稳定性问题**。
 - **存档**：`savedata/gloval.sav`、`kidoku.dat`、`NScrllog.dat` 均落盘；
   [harness/run_savetest.sh](../harness/run_savetest.sh) 证明**跨进程往返**——
   前一个进程被 `kill -9`，新进程仍读回变量。
@@ -53,7 +62,7 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
   引擎侧修了 `setwindow3` 字号、字距不得小于字号、`tateyoko`、文字原点缩放、
   `savedir` 自动建目录、AVFoundation 双 reader 的 SIGBUS。
 - **未完**：文字画在屏幕顶部而非对话框内（`ONS_NO_LUA_TEXT=1` 让游戏自己的窗口设置不生效）；
-  `setloop` 的画面上屏；编号存档槽未测。
+  `setloop` 的画面上屏；编号存档槽未测；振假名（`ruby`）四次尝试均因测试脚本构造问题未验成。
 
 ### ② KiriKiri — 一款真实 KAG 作品，整章可玩
 
@@ -132,8 +141,9 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
 
 ## 已知缺口（一条没藏）
 
-1. **NScripter**：正文画在屏幕顶部而非对话框（待保留窗口设置、只跳过 `_print`）；
-   `setloop` 画面上屏；编号存档槽未测。
+1. **NScripter**：**C3 稳定性缺陷（Release 下约 25 秒崩溃，use-after-free，根因未定位）**；
+   正文画在屏幕顶部而非对话框（待保留窗口设置、只跳过 `_print`）；
+   `setloop` 画面上屏；编号存档槽与振假名未测。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
 3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
 4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。

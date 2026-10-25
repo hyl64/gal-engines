@@ -23,6 +23,7 @@
  */
 
 #include "ONScripter.h"
+#include <execinfo.h>
 /* ONS_TRACE_CHAIN=1: one counter per step of the layer-movie paint path.
  * Five rounds of guessing which link was broken; this answers it in one run. */
 static void chainProbe(const char *what, long a = -1, long b = -1)
@@ -172,6 +173,22 @@ SDL_Surface *ONScripter::createSurfaceFromFile(char *filename, bool *has_alpha, 
             }
         }
         utils::printError(" *** can't find file [%s] ***\n", filename);
+        if (!filename || !*filename){
+            /* An empty name being loaded is never legitimate, and it showed up in the
+             * log of every crashing run -- either the site of the damage or its first
+             * victim.  Print who asked for it, once. */
+            static int done = 0;
+            static int on = -1;
+            if (on < 0){ const char *e = getenv("ONS_TRACE_EMPTYNAME"); on = (e && *e) ? 1 : 0; }
+            if (on && !done){
+                done = 1;
+                void *frames[32];
+                int n = backtrace(frames, 32);
+                fprintf(stderr, "*** empty filename requested, %d frames ***\n", n);
+                backtrace_symbols_fd(frames, n, fileno(stderr));
+                fflush(stderr);
+            }
+        }
         return NULL;
     }
 
