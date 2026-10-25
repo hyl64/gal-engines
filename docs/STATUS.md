@@ -70,8 +70,10 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
   对话框、气泡纵排台词、立绘场景全部正确（11/16 分钟帧：
   `test/video/evidence/luapath-*.png`）。`ONS_NO_LUA_TEXT` 不再是本作必需，
   保留为其它作品的后备开关。
-- **未完**：`setloop` 循环背景的持续上屏（层影片映射已接、blit 已证实内容落盘）；
-  编号存档槽已测通（见上）。
+- **层影片上屏证实**（90 秒长跑 + blit 探针）：`refresh-fetch got=1`、
+  blit 后表面含真实内容（暗蓝夜景色调）、最终帧 68,210 色——
+  层影片的映射查询 → 解码 → 上屏全链路工作。
+  `setloop/NN` 为循环标志（非电影名），背景电影走同一链路。
 
 ### ② KiriKiri — 一款真实 KAG 作品，整章可玩
 
