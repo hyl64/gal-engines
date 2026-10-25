@@ -498,6 +498,51 @@ int main(int argc, char** argv)
 						clicks++;
 					}
 				}
+				/* KRKR_AUTOPLAY_MS="<ms>[,x,y]": the auto-play mode.  A click every
+				 * N ms at the given point (default 400,300), forever -- a KAG
+				 * game then plays itself, which is the acceptance for "a player
+				 * does not have to click every line".  Off unless set. */
+				if(const char* ap = getenv("KRKR_AUTOPLAY_MS"))
+				{
+					static long interval = -1;
+					static int ax = 400, ay = 300;
+					if (interval < 0){
+						char *endp = NULL;
+						long v = strtol(ap, &endp, 10);
+						interval = (v > 0) ? v : 1000;
+						if (*endp == ','){ ax = atoi(endp+1); char *c = strchr(endp+1, ','); if (c) ay = atoi(c+1); }
+					}
+					static Uint64 last_ap = 0;
+					Uint64 now_ap = SDL_GetTicks64() - start;
+					if (now_ap - last_ap >= (Uint64)interval)
+					{
+						last_ap = now_ap;
+						if(getenv("KRKR_DEBUG_INPUT"))
+						{
+							fprintf(stderr, "[autoplay] click at %lld ms\n", (long long)now_ap);
+							fflush(stderr);
+						}
+						if(iTVPDrawDevice* device = TVPGetLastDrawDeviceDarwin())
+						{
+							try
+							{
+								device->OnMouseMove(ax + 1, ay + 1, 0);
+								device->OnMouseMove(ax, ay, 0);
+								device->OnMouseDown(ax, ay, mbLeft, 0);
+								device->OnMouseUp(ax, ay, mbLeft, 0);
+								device->OnClick(ax, ay);
+							}
+							catch(...)
+							{
+								if(getenv("KRKR_DEBUG_INPUT"))
+								{
+									fprintf(stderr, "[autoplay] hit a stale layer\n");
+									fflush(stderr);
+								}
+							}
+						}
+					}
+				}
 				/* KRKR_AUTO_RCLICK="x,y,from_ms": the right button, which KAG uses
 				 * for its menu (save, load, settings, history). */
 				if(const char* rclick = getenv("KRKR_AUTO_RCLICK"))
