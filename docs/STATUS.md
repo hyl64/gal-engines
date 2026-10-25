@@ -15,7 +15,7 @@
 | ② KiriKiri → Kirikiroid2 | arm64 原生，CMake | 真实 KAG 工程 + 官方 KAG3 demo | 标题→点击→整章正文，目录与 `data.xp3` 两种形态 | story/demo/save/video/audio/perf 六项全绿 |
 | ③ RealLive → RLVM | arm64 原生，scons | CLANNAD Full Voice（231 剧本，4 GB） | 标题、立绘、文字、中文台词、系统菜单、BGM | 260/260 单元测试；app bundle + DMG |
 | ④ Ethornell → OpenBGI | arm64 原生，自带 Makefile | 《遥か碧の花嫁に》官方体验版 | 引导→标题画面完整渲染 | 1920×1080 标题帧（45 万色）；列出 profile 1.669 |
-| ⑤ Artemis（从零重写） | arm64 原生，约 1.5 万行 | 三套真实归档（pf6/pf8，含 2,884 句台词） | 标题→Start→正文 60 FPS；存档可续跑 | 11 个工具 9 项自检；独立验收 30 项 0 失败 |
+| ⑤ Artemis（从零重写） | arm64 原生，约 1.5 万行 | 三套真实归档（pf6/pf8，含 2,884 句台词） | 标题→Start→正文 60 FPS；**真实作品剧本播放**（nicolan 369 句） | 11 个工具 9 项自检；独立验收 30 项 0 失败 |
 
 **五个引擎都在同一台 M1 上跑真实数据，没有 Wine、没有 Rosetta、没有虚拟机。**
 
