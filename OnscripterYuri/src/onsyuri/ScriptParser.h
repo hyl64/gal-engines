@@ -372,6 +372,9 @@ protected:
         Page(){
             text = NULL;
             text_count = 0;
+            max_text = 0;   // was indeterminate: a page whose clearCurrentPage() has
+                            // not run yet (a Lua-driven text path, for one) then
+                            // grows through new char[0] forever and writes past it
             tag = NULL;
         }
         ~Page(){
@@ -379,12 +382,21 @@ protected:
             if (tag)  delete[] tag;
         }
         char add(char ch){
-            if (text_count >= max_text){
-                char *text2 = new char[max_text*2];
-                memcpy(text2, text, max_text);
+            // max_text can legitimately be 0 here (a 0x0 font makes
+            // clearCurrentPage() allocate a zero-length buffer), and the old
+            // doubling left it at zero forever, writing one byte past a
+            // zero-size allocation on every character -- heap corruption whose
+            // crash site wandered all over the process.
+            if (text == NULL || text_count >= max_text){
+                int n = (max_text > 0) ? max_text * 2 : 256;
+                char *text2 = new char[n];
+                if (text && max_text > 0){
+                    int keep = (text_count < max_text) ? text_count : max_text;
+                    memcpy(text2, text, keep);
+                }
                 delete[] text;
                 text = text2;
-                max_text *= 2;
+                max_text = n;
             }
             text[text_count++] = ch;
             return ch;

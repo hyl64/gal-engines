@@ -45,12 +45,15 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
   （截图见 [test/video/shots](../OnscripterYuri/test/video/shots/)）。
   本仓库的自动验收只能做到「启动并存活」：无头环境没有点击注入，游戏停在空文本层
   （`[textlayer] ink=0`），实测连续 **110 秒不崩**。
-- **⚠️ 已知稳定性缺陷 C3**：在 **Release 构建 + 实际操作**（播影片、排版文本）下约
-  **25 秒必崩**；`ASan` 构建存活 260 秒以上。根因未定位，但已排除 7 条路径，问题类别
-  锁定为 use-after-free，崩溃点随运行游走（VideoToolbox / CoreMedia / libxpc /
-  SDL3 / libvorbis / IOSurface）。完整交接见
-  [C3-HANDOFF.md](../OnscripterYuri/C3-HANDOFF.md)——**这是本仓库目前唯一未解决的
-  稳定性问题**。
+- **✅ C3 稳定性缺陷已修复**（原：Release 构建下约 25 秒必崩）。根因是
+  `Page::add` 的 lookback 缓冲在 `max_text == 0` 时永远长不出来——Lua 驱动的文本路径
+  传 0×0 字号，`clearCurrentPage()` 分配零长缓冲，之后每个字符都往零大小分配外写
+  1 字节，堆被踩坏后崩溃点随机游走（malloc freelist / VideoToolbox / libxpc /
+  libvorbis / IOSurface）。**Guard Malloc 抓到写入者**（drawChar 内联的 add），
+  修复后三连跑全部越过原崩溃点 1.7 倍时长，并推进到 15 分钟深处的剧情；
+  随后的一次退出是**干净的脚本错误**（`NSPopComma` 无逗号——盲点击踩进分支的
+  脚本级兼容问题），不再是内存崩溃。原 [C3-HANDOFF.md](../OnscripterYuri/C3-HANDOFF.md)
+  保留作历史记录。
 - **存档**：`savedata/gloval.sav`、`kidoku.dat`、`NScrllog.dat` 均落盘；
   [harness/run_savetest.sh](../harness/run_savetest.sh) 证明**跨进程往返**——
   前一个进程被 `kill -9`，新进程仍读回变量。
@@ -141,9 +144,9 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
 
 ## 已知缺口（一条没藏）
 
-1. **NScripter**：**C3 稳定性缺陷（Release 下约 25 秒崩溃，use-after-free，根因未定位）**；
-   正文画在屏幕顶部而非对话框（待保留窗口设置、只跳过 `_print`）；
-   `setloop` 画面上屏；编号存档槽与振假名未测。
+1. **NScripter**：~~C3 崩溃~~ 已修复（`Page::add` 零长缓冲增长缺陷）；
+   剩余：盲点击深处的 `NSPopComma` 脚本级分歧（honpen_inaka1:4592）、
+   正文画在屏幕顶部而非对话框、`setloop` 画面上屏、编号存档槽与振假名未测。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
 3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
 4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。
