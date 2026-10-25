@@ -1,5 +1,21 @@
 # 五个引擎的状态（2026-10-25）
 
+## 五引擎最终记分（2026-10-26，全部真机实测）
+
+| 引擎 | 跑通的真实数据 | 玩法能力 | 关键证据 |
+|---|---|---|---|
+| ① NScripter | 商业体验版（TRT，1.5 GB）+ 官方 SDK 5 套 | 对话框正文、振假名、编号存读档、插入影片层、41 分钟连续游玩 | `load-restored-scene.png`、`ruby-above-text.png` |
+| ② KiriKiri | 真实 KAG 工程 + 官方 demo | 整章自动播放、存读档、影片、音频 | 35 次剧本加载零错误 |
+| ③ RealLive | CLANNAD FV（4 GB） | 标题/立绘/台词/菜单/BGM | 260/260 测试 |
+| ④ Ethornell | 官方体验版 | 标题画面完整渲染 | BGI 帧 |
+| ⑤ Artemis（从零重写） | 3 套真实归档（pf6/pf8） | **真实 Lua UI 启动链跑通 + 标题画面渲染**（ラズベリーキューブ） | `pf8-title-rendered.png`（775 个 e:tag） |
+
+通用：`gal` 管理器（add/play/verify/doctor/savetest）+ `gal app` 双击启动器。
+
+Artemis 的诚实标注：scetween 动画（标签已捕获，插值未实装）、`.psb`（语料为 0，
+按规格实现）——余项见 `docs/artemis-lua-host.md`。
+
+
 本文件只写**跑出来的事实**。每条结论后面要么是命令，要么是对应的验收记录；
 没有跑通的不写「支持」，跑了一半的写明「跑到哪」。
 
