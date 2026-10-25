@@ -60,3 +60,21 @@ g     求值命名空间（get_eval("g.rur") 直接读引擎变量）
 - 本仓库已交付：API 面规格（本文）、真实样本、.asb 魔数与结构首查。
 - 在宿主完成前，第二部作品的验收标注为「格式全覆盖 + UI Lua 规格就绪」，
   不标注「可玩」。
+
+
+## 阶段 1 已完成（2026-10-26）：Lua 5.1.5 内嵌 + 真实游戏 Lua 执行
+
+`artemis/tools/luahost.cpp`：vendor 的 Lua 5.1.5（`artemis/third_party/lua/`，arm64
+构建通过）、引擎 API 桩（按本文 API 面）、全局状态表（`ONS_LUA_TABLES` 名单，自动
+生成 metatable）、`get_eval` 已实现为**真正的路径游走**（状态对偶的雏形）。
+
+实测：pf8 标题画面的 `system_ui_title.lua` 加载成功，`title_init` 执行到第 57 行，
+途中引擎桩被真实调用（`get_eval`×4、`tn`×4、`message`×1）。
+
+**边界**：第 57 行需要 `scr.mw` 是表——那由另外 52 个 .lua 在前面的加载顺序里填充。
+留存样本只有 1/53；按 `download.md` 配方重下 pf8 全量后，把 53 个文件按序加载，
+`title_init` 应能跑完（这就是阶段 2 的第一项）。
+
+**驱动技巧**：缺失的全局表名可以通过解析
+`attempt to index global 'X' (a nil value)` 逐个发现并加入 `ONS_LUA_TABLES`——
+本轮就是这样发现 `scr` 的。
