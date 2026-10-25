@@ -152,6 +152,11 @@ public:
     bool compareString( const char *buf );
     void setEndStatus(int val){ end_status |= val; };
     inline int getEndStatus(){ return end_status; };
+    inline int getExternalScriptDepth(){
+        int d = 0;
+        for (ScriptContext *sc = last_script_context; sc; sc = sc->prev) d++;
+        return d;
+    }
     void skipLine( int no=1 );
     void setLinepage( bool val );
     void setEnglishMode( bool val ){ english_mode = val; };

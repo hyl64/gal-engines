@@ -551,7 +551,7 @@ int NSPopInt(lua_State *state)
         lua_error( state );
     }
 
-    lua_pushnumber( state, lh->sh->readInt() );
+    lua_pushinteger( state, lh->sh->readInt() );
 
     return 1;
 }
@@ -573,7 +573,7 @@ int NSPopIntRef(lua_State *state)
         lua_error( state );
     }
         
-    lua_pushnumber( state, lh->sh->current_variable.var_no );
+    lua_pushinteger( state, lh->sh->current_variable.var_no );
 
     return 1;
 }
@@ -611,7 +611,7 @@ int NSPopStrRef(lua_State *state)
         lua_error( state );
     }
         
-    lua_pushnumber( state, lh->sh->current_variable.var_no );
+    lua_pushinteger( state, lh->sh->current_variable.var_no );
 
     return 1;
 }
@@ -660,6 +660,18 @@ int NSPopComma(lua_State *state)
     LUAHandler *lh = (LUAHandler*)lua_topointer( state, -1 );
 
     int val = lh->sh->getEndStatus();
+    {
+        static int dbg = -1;
+        if (dbg < 0){ const char *e = getenv("ONS_DEBUG_COMMA"); dbg = (e && *e) ? 1 : 0; }
+        if (dbg){
+            fprintf(stderr, "[comma] pop: status=0x%x comma=%d read=%d depth=%d\n",
+                    val,
+                    (int)!(val & ScriptHandler::END_COMMA),
+                    (int)!(val & ScriptHandler::END_COMMA_READ),
+                    (int)lh->sh->getExternalScriptDepth());
+            fflush(stderr);
+        }
+    }
     if (!(val & ScriptHandler::END_COMMA) || val & ScriptHandler::END_COMMA_READ){
         lua_pushstring( state, "LUAHandler::NSPopComma() no comma." );
         lua_error( state );

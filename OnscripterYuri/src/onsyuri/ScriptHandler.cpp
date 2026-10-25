@@ -473,6 +473,16 @@ void ScriptHandler::enterExternalScript(char *pos)
     sc->end_status = end_status;
     sc->current_variable = current_variable;
     sc->pushed_variable = pushed_variable;
+    {
+        static int dbg = -1;
+        if (dbg < 0){ const char *e = getenv("ONS_DEBUG_COMMA"); dbg = (e && *e) ? 1 : 0; }
+        if (dbg){
+            int d = 0; for (ScriptContext *x = last_script_context; x; x = x->prev) d++;
+            fprintf(stderr, "[ctx] enter #%d status=0x%x script=\"%s\"\n", d, end_status,
+                    pos ? pos : "");
+            fflush(stderr);
+        }
+    }
 }
 
 void ScriptHandler::leaveExternalScript()
@@ -488,6 +498,15 @@ void ScriptHandler::leaveExternalScript()
     end_status = sc->end_status;
     current_variable = sc->current_variable;
     pushed_variable = sc->pushed_variable;
+    {
+        static int dbg = -1;
+        if (dbg < 0){ const char *e = getenv("ONS_DEBUG_COMMA"); dbg = (e && *e) ? 1 : 0; }
+        if (dbg){
+            int d = 0; for (ScriptContext *x = last_script_context; x; x = x->prev) d++;
+            fprintf(stderr, "[ctx] leave -> #%d status=0x%x\n", d, end_status);
+            fflush(stderr);
+        }
+    }
     delete sc;
 }
 
