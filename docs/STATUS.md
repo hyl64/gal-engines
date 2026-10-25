@@ -65,8 +65,12 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
   按 HTTP Range 只取中央目录、再按 member 偏移重新下载才修好；
   引擎侧修了 `setwindow3` 字号、字距不得小于字号、`tateyoko`、文字原点缩放、
   `savedir` 自动建目录、AVFoundation 双 reader 的 SIGBUS。
-- **未完**：文字画在屏幕顶部而非对话框内（`ONS_NO_LUA_TEXT=1` 让游戏自己的窗口设置不生效）；
-  `setloop` 的画面上屏；编号存档槽未测；振假名（`ruby`）四次尝试均因测试脚本构造问题未验成。
+- **正文进对话框（原生 Lua 路径）**：修完内存/事件缺陷后，游戏自己的文本流程
+  （`NSCALL_text → mode_normal → _setwindow3 → _print`）已可用——
+  对话框、气泡纵排台词、立绘场景全部正确（11/16 分钟帧：
+  `test/video/evidence/luapath-*.png`）。`ONS_NO_LUA_TEXT` 不再是本作必需，
+  保留为其它作品的后备开关。
+- **未完**：`setloop` 的画面上屏；编号存档槽未测；振假名（`ruby`）未验成。
 
 ### ② KiriKiri — 一款真实 KAG 作品，整章可玩
 

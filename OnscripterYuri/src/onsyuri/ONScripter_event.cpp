@@ -1192,46 +1192,114 @@ void ONScripter::runEventLoop()
     static Uint32 s_autoclick_ms = 0xFFFFFFFF;
     static Uint32 s_last_autoclick = 0;
     auto maybe_autoclick = [&]() {
+        /* One-time setup: the periodic click needs ONS_AUTOCLICK_MS, the timed
+         * sequence needs ONS_AUTOCLICK_SEQ; either one keeps this hook alive. */
+        static Uint32 s_autoclick_ms = 0xFFFFFFFF;
+        static Uint32 s_last_autoclick = 0;
+        static int s_autoclick_x = -1, s_autoclick_y = -1;
+        static bool s_seq_requested = false;
         if (s_autoclick_ms == 0xFFFFFFFF){
             const char *e = getenv("ONS_AUTOCLICK_MS");
             s_autoclick_ms = (e && *e) ? (Uint32)atoi(e) : 0;
-        }
-        if (!s_autoclick_ms) return;
-        const Uint32 now = SDL_GetTicks();
-        if (now - s_last_autoclick < s_autoclick_ms) return;
-        s_last_autoclick = now;
-        /* ONS_AUTOCLICK_X / ONS_AUTOCLICK_Y: where the synthetic click lands
-         * (screen coordinates of the game, default 320,320).  A title screen
-         * needs its own button hit; that is the point of the override. */
-        static int s_autoclick_x = -1, s_autoclick_y = -1;
-        if (s_autoclick_x < 0){
             const char *ex = getenv("ONS_AUTOCLICK_X");
             const char *ey = getenv("ONS_AUTOCLICK_Y");
             s_autoclick_x = (ex && *ex) ? atoi(ex) : 320;
             s_autoclick_y = (ey && *ey) ? atoi(ey) : 320;
+            const char *q = getenv("ONS_AUTOCLICK_SEQ");
+            s_seq_requested = (q && *q) ? true : false;
         }
-        /* A press alone is reported as a generic LCLICK: the engine resolves
-         * the button under the pointer in the *motion* handler, so a synthetic
-         * click has to move the pointer there first or it can never press a
-         * sprite button (the title screen ignored it for exactly this reason). */
-        SDL_Event motion, down, up;
-        SDL_zero(motion); SDL_zero(down); SDL_zero(up);
-        motion.type = SDL_MOUSEMOTION;
-        motion.motion.x = s_autoclick_x;
-        motion.motion.y = s_autoclick_y;
-        motion.motion.state = 0;
-        SDL_PushEvent(&motion);
-        down.type = SDL_MOUSEBUTTONDOWN;
-        down.button.button = SDL_BUTTON_LEFT;
-        down.button.state = SDL_PRESSED;
-        down.button.x = s_autoclick_x;
-        down.button.y = s_autoclick_y;
-        SDL_PushEvent(&down);
-        up = down;
-        up.type = SDL_MOUSEBUTTONUP;
-        up.button.state = SDL_RELEASED;
-        SDL_PushEvent(&up);
+        if (!s_autoclick_ms && !s_seq_requested) return;
+        const Uint32 now = SDL_GetTicks();
+
+        // (a) the periodic click: every s_autoclick_ms at the fixed point
+        if (s_autoclick_ms && now - s_last_autoclick >= s_autoclick_ms){
+            s_last_autoclick = now;
+            /* A press alone is reported as a generic LCLICK: the engine resolves
+             * the button under the pointer in the *motion* handler, so a synthetic
+             * click has to move the pointer there first or it can never press a
+             * sprite button (the title screen ignored it for exactly this reason). */
+            SDL_Event motion, down, up;
+            SDL_zero(motion); SDL_zero(down); SDL_zero(up);
+            motion.type = SDL_MOUSEMOTION;
+            motion.motion.x = s_autoclick_x;
+            motion.motion.y = s_autoclick_y;
+            motion.motion.state = 0;
+            SDL_PushEvent(&motion);
+            down.type = SDL_MOUSEBUTTONDOWN;
+            down.button.button = SDL_BUTTON_LEFT;
+            down.button.state = SDL_PRESSED;
+            down.button.x = s_autoclick_x;
+            down.button.y = s_autoclick_y;
+            SDL_PushEvent(&down);
+            up = down;
+            up.type = SDL_MOUSEBUTTONUP;
+            up.button.state = SDL_RELEASED;
+            SDL_PushEvent(&up);
+        }
+
+        // (b) ONS_AUTOCLICK_SEQ="ms:x,y[,L|R];...": timed clicks, each fired once,
+        // R opens a game's system menu.  Walking a menu (right-click, SAVE, a slot,
+        // confirm) is a sequence of points at fixed offsets in time, which a single
+        // repeating click cannot express.
+        static bool s_seq_loaded = false;
+        struct SeqClick { Uint32 t; int x, y; bool right; };
+        static SeqClick s_seq[64];
+        static int s_seq_n = 0;
+        if (!s_seq_loaded){
+            s_seq_loaded = true;
+            const char *e = getenv("ONS_AUTOCLICK_SEQ");
+            if (e && *e){
+                const char *p = e;
+                while (*p && s_seq_n < 64){
+                    char *endp = NULL;
+                    unsigned long t = strtoul(p, &endp, 10);
+                    if (endp == p) break;
+                    p = endp;
+                    if (*p != ':') break;
+                    p++;
+                    long x = strtol(p, &endp, 10); if (endp == p) break; p = endp;
+                    if (*p != ',') break;
+                    p++;
+                    long y = strtol(p, &endp, 10); if (endp == p) break; p = endp;
+                    bool right = false;
+                    if (*p == ','){ p++; right = (*p == 'R' || *p == 'r'); while (*p && *p != ';') p++; }
+                    s_seq[s_seq_n].t = (Uint32)t;
+                    s_seq[s_seq_n].x = (int)x;
+                    s_seq[s_seq_n].y = (int)y;
+                    s_seq[s_seq_n].right = right;
+                    s_seq_n++;
+                    if (*p == ';') p++; else break;
+                }
+            }
+        }
+        for (int i = 0; i < s_seq_n; i++){
+            if (s_seq[i].t == 0xFFFFFFFF) continue;   // already fired
+            if (now < s_seq[i].t) continue;           // not yet due (the list is ordered)
+            SDL_Event motion, down, up;
+            SDL_zero(motion); SDL_zero(down); SDL_zero(up);
+            motion.type = SDL_MOUSEMOTION;
+            motion.motion.x = s_seq[i].x;
+            motion.motion.y = s_seq[i].y;
+            motion.motion.state = 0;
+            SDL_PushEvent(&motion);
+            down.type = SDL_MOUSEBUTTONDOWN;
+            down.button.button = s_seq[i].right ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
+            down.button.state = SDL_PRESSED;
+            down.button.x = s_seq[i].x;
+            down.button.y = s_seq[i].y;
+            SDL_PushEvent(&down);
+            up = down;
+            up.type = SDL_MOUSEBUTTONUP;
+            up.button.state = SDL_RELEASED;
+            SDL_PushEvent(&up);
+            if (getenv("ONS_DEBUG_INPUT"))
+                fprintf(stderr, "[seq] click %d: %s %d,%d at %u ms\n", i,
+                        s_seq[i].right ? "R" : "L", s_seq[i].x, s_seq[i].y, now);
+            s_seq[i].t = 0xFFFFFFFF;                  // mark fired
+            break;                                    // one synthetic click per pass
+        }
     };
+
 
     while ( true ) {
         if ( SDL_WaitEventTimeout(&event, 16) == 0 ) {
