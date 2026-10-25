@@ -1,5 +1,7 @@
 # gal-engines
 
+[![build](https://github.com/hyl64/gal-engines/actions/workflows/build.yml/badge.svg)](https://github.com/hyl64/gal-engines/actions/workflows/build.yml)
+
 Five galgame engines, ported to run natively on Apple Silicon — and one manager
 that knows how to start any of them.
 
@@ -82,9 +84,14 @@ that answered for every format, RLVM's SDL3 move, Artemis's PFS cipher. Start at
 |---|---|---|
 | OnscripterYuri | `cmake -B build && cmake --build build` | SDL2, Lua |
 | kirikiroid2-mac | same | SDL2_mixer, jpeg-turbo, lz4, ffmpeg |
-| rlvm | `scons --release` | sdl12-compat (SDL 1.2 API over SDL3) |
+| rlvm | `scons --release --no-bundle` | sdl12-compat (SDL 1.2 API over SDL3) |
 | openbgi | `make PLATFORM=darwin` | SDL2 |
 | artemis | `cmake -B build && cmake --build build` | SDL2, CoreText |
+
+The RLVM app bundle and DMG (`scons --release --fullstatic --dmgname="rlvm 0.14"`)
+need an `install_name_tool` that can rewrite an already-signed Homebrew library;
+Xcode 15's cannot, so the bundle step is behind `--no-bundle` and CI builds the
+executable and its 260 unit tests instead.
 
 ## Documentation
 
