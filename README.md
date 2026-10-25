@@ -31,6 +31,7 @@ gal-engines/
 ./gal/gal play <名字> --dump x.bmp # 无头跑十几秒，把引擎画的画面存下来（② BGI）
 ./gal/gal prep <名字>             # 把游戏里的 .avi/.mpg（含 arc.nsa 里的）转码到 _video/
 ./gal/gal savetest <名字>         # 存读档往返测试（转发 harness/run_savetest.sh）
+./gal/gal app <名字>              # 生成双击即玩的 .app（桌面）
 ./harness/run_savetest.sh         # 同一件事，不走 gal
 ./bench/bench.sh <binary> <game>  # 静态页 CPU/RSS 基线
 ./OnscripterYuri/test/video/run_acceptance.sh   # 影片后端 8 项验收
