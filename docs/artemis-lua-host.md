@@ -122,3 +122,25 @@ title_load2info……），exit 0，**872 次引擎调用**。
 
 **阶段 3**：title_init 里 e:tag 发出的精灵命令（bg01/char/logo/trial 等，
 `csv["ui_title"]` 里有完整定义）接到真实渲染——出画面。
+
+
+## 阶段 3 达成（2026-10-26）：标题画面渲染成功
+
+`luahost` 实装渲染器：
+- `e:tag{"lyc", id=..., file=...}` → pngio 加载 png 入层表（`:bg/black` 为内置纯色）
+- `e:tag{"lyprop", ...}` → 位置（x/y/left/top）、clip（"x,y,w,h"）、alpha、visible
+- `e:tag{"lydel", id=...}` → 删除
+- 运行结束：全部可见层按插入序（=z 序）合成到 1280×720 画布，alpha 混合，
+  `ONS_RENDER=<path>` 写 PNG
+
+**结果**：pf8 web 体验版的标题画面从它自己的启动链渲染出来——
+init.lua → system_loadinglua（54 文件）→ system_initialize → title_init，
+775 个 e:tag 命令，合成图即标题美术：四角色立绘、
+ラズベリーキューブ LOGO（体験版徽章）、波点背景。
+
+证据：`artemis/screenshots/pf8-title-rendered.png`。
+
+已知小瑕疵：内置 `:bg/black` 底层与 png alpha 的 z 序——左上 UI 有一部分
+透出（应为黑色衬底）。属化妆级问题，下一轮修。
+
+**目标 4 的「出画面」达成**。
