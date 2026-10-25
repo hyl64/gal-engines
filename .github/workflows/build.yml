@@ -10,7 +10,7 @@ jobs:
   build:
     # Apple Silicon runner: these ports are arm64-only.
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -23,19 +23,54 @@ jobs:
           echo "--- versions ---"
           cmake --version | head -1
           scons --version | head -2
-          brew --prefix sdl2
+          echo "brew prefix: $(brew --prefix)"
 
-      - name: Build all five engines
-        run: ./build-all.sh
+      # One step per engine, so a failure lands in its own log rather than in a
+      # combined one, and its compiler output is visible without digging.
+      - name: Build nscripter (OnscripterYuri)
+        run: |
+          cd OnscripterYuri
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+
+      - name: Build bgi (OpenBGI)
+        run: make -C openbgi/openbgi-src PLATFORM=darwin -j2
+
+      - name: Build kirikiri (Kirikiroid2)
+        run: |
+          cd kirikiroid2-mac
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+
+      - name: Build artemis (from scratch)
+        run: |
+          cd artemis
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+
+      - name: Build reallive (RLVM)
+        run: |
+          cd rlvm
+          scons --release -j2
 
       - name: Checks that need no game data
         # Everything else needs a game the repository deliberately does not ship
         # (docs/DATA.md).  These two exercise real code paths on their own:
         # 260 RLVM unit tests, and Artemis's pfs/ast/runtime layers.
-        run: ./build-all.sh --check --skip nscripter --skip kirikiri --skip bgi --skip artemis
+        run: |
+          ./build-all.sh --check --skip nscripter --skip kirikiri --skip bgi
 
-      - name: Artemis self tests in full
-        run: ./build-all.sh --check --skip nscripter --skip kirikiri --skip bgi --skip reallive
+      - name: Artifacts exist
+        run: |
+          set -e
+          for f in OnscripterYuri/build/onsyuri \
+                   openbgi/openbgi-src/bin/bgi \
+                   kirikiroid2-mac/build/krkrrun \
+                   artemis/build/agame \
+                   rlvm/build/rlvm.app/Contents/MacOS/rlvm; do
+            test -x "$f" || { echo "missing: $f"; exit 1; }
+            printf '%-52s %s\n' "$f" "$(file -b "$f" | cut -d, -f1)"
+          done
 
       - name: Collect logs on failure
         if: failure()
@@ -43,7 +78,7 @@ jobs:
           for f in /tmp/gal_build_*.log /tmp/gal_*.log; do
             [ -f "$f" ] || continue
             echo "=== $f ==="
-            tail -60 "$f"
+            tail -80 "$f"
           done
 
       - name: Upload logs

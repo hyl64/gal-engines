@@ -64,10 +64,12 @@ fail() { printf "  \033[31m✗\033[0m %-16s %s\n" "$1" "$2"; bad_count=$((bad_co
 skip() { printf "  \033[33m·\033[0m %-16s %s\n" "$1" "$2"; skip_count=$((skip_count + 1)); }
 
 # A build counts only if it exits zero and leaves the expected executable: a
-# stale binary from an earlier run must not read as a success.
+# stale binary from an earlier run must not read as a success.  The output is not
+# swallowed - the caller redirects it to a log, and a failure that says nothing
+# is a failure nobody can diagnose.
 build_cmake() { # dir, binary
-	( cd "$ROOT/$1" && cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1 \
-		&& cmake --build build -j2 >/dev/null 2>&1 ) && [ -x "$ROOT/$2" ]
+	( cd "$ROOT/$1" && cmake -B build -DCMAKE_BUILD_TYPE=Release \
+		&& cmake --build build -j2 ) && [ -x "$ROOT/$2" ]
 }
 
 echo "构建"
