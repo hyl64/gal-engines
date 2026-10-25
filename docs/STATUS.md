@@ -156,9 +156,13 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
    改为 `lua_pushinteger` 后，盲点击连续运行 **41:21 零错误、37 部影片**
 （原 15 分钟即死；30 分钟验收线以 30:49 首次越过，随后主动结束）。
    ~~剩余：正文画进对话框~~ **已通**（原生 Lua 路径，见上）。
-   剩余：**编号存档槽**——`ONS_AUTOCLICK_SEQ` 时序点击已能打开菜单与
-   セーブモード（4 槽位）界面，但点击槽位未触发写盘（热点区域或体验版限制），
-   差一步；`setloop` 上屏；振假名（`ruby`）未验成。
+   ~~剩余：编号存档槽~~ **已打通**：时序点击（`ONS_AUTOCLICK_SEQ`）走完
+   菜单 → セーブモード → 槽位 1 → 写盘（`savedata/save1.dat` 51596 B +
+   `thumb1.bmp` 缩略图 + `gloval.sav`）；重新启动 → Load Mode → 确认
+   「このデータをロードしますか？」→ **恢复到存档时刻的场景并继续播放**
+   （证据：`test/video/evidence/load-restored-scene.png` 等 4 帧）。
+   根因之一是 `savedir "savedata"` 的目录从未被创建——`setSaveDir` 现在会建。
+   剩余：`setloop` 上屏；振假名（`ruby`）未验成。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
 3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
 4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。

@@ -24,6 +24,7 @@
  */
 
 #include "ScriptHandler.h"
+#include <sys/stat.h>
 #include "Utils.h"
 #include "coding2utf16.h"
 
@@ -148,6 +149,16 @@ void ScriptHandler::setSaveDir(const char *path)
     if (save_dir) delete[] save_dir;
     save_dir = new char[ strlen(path)+1 ];
     strcpy(save_dir, path);
+    /* The save directory is named by the script and may not exist in the data a
+     * player unpacks; every save (gloval.sav, saveN.dat) lands here, so create it
+     * the moment the script names it. */
+    if (strlen(path)){
+        char full[512];
+        snprintf(full, sizeof full, "%s%s", archive_path ? archive_path : "", path);
+        for (unsigned int i=0 ; i<strlen(full) ; i++)
+            if (full[i] == '/' || full[i] == '\\') full[i] = DELIMITER;
+        ::mkdir(full, 0755);   // EEXIST is fine; a real failure surfaces at fopen
+    }
 }
 
 FILE *ScriptHandler::fopen( const char *path, const char *mode, bool use_save_dir )
