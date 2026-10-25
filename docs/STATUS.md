@@ -51,8 +51,9 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
   1 字节，堆被踩坏后崩溃点随机游走（malloc freelist / VideoToolbox / libxpc /
   libvorbis / IOSurface）。**Guard Malloc 抓到写入者**（drawChar 内联的 add），
   修复后三连跑全部越过原崩溃点 1.7 倍时长，并推进到 15 分钟深处的剧情；
-  随后的一次退出是**干净的脚本错误**（`NSPopComma` 无逗号——盲点击踩进分支的
-  脚本级兼容问题），不再是内存崩溃。原 [C3-HANDOFF.md](../OnscripterYuri/C3-HANDOFF.md)
+  随后在 **~15 分钟、44 部影片之后**退出，且三次运行**一致地**停在同一个脚本错误
+  （`NSPopComma` 无逗号，honpen_inaka1:4592）——盲点击踩进分支的脚本级兼容问题，
+  可复现、非内存崩溃。原 [C3-HANDOFF.md](../OnscripterYuri/C3-HANDOFF.md)
   保留作历史记录。
 - **存档**：`savedata/gloval.sav`、`kidoku.dat`、`NScrllog.dat` 均落盘；
   [harness/run_savetest.sh](../harness/run_savetest.sh) 证明**跨进程往返**——
