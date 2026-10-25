@@ -1,0 +1,8 @@
+var win = new Window();
+win.setInnerSize(640, 480);
+var layer = new Layer(win, null);
+layer.setSize(640, 480);
+layer.fillRect(0, 0, 640, 480, 0xff204060);
+layer.drawText(40, 60, "レイヤーに描けた", 0xfff0f0f0);
+win.update();
+System.inform("updated");

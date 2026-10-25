@@ -1,0 +1,3 @@
+Thread No. [ 9 ] , IP [ $00000014 ] , Instruction No. [ $8144 ]
+
+The initial IP of the child thread was set to a value $E00 exceeding the size of the code area

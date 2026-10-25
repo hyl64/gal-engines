@@ -1,0 +1,34 @@
+// A minimal KAG-shaped bootstrap, written the way a game's system.tjs is laid
+// out: globals for the window and its layers, functions that act on them, then a
+// scenario that calls those functions.
+
+var kagWindow = null;
+var kagBase = null;
+var kagText = null;
+
+function kagInit(width, height)
+{
+	kagWindow = new Window();
+	kagWindow.setInnerSize(width, height);
+
+	kagBase = new Layer(kagWindow, null);
+	kagBase.setSize(width, height);
+	kagBase.visible = true; // a layer is invisible until it is told otherwise
+	kagBase.fillRect(0, 0, width, height, 0xff102030);
+
+	kagText = new Layer(kagWindow, kagBase);
+	kagText.setSize(width, height);
+	kagText.visible = true;
+
+	System.inform("engine up: " + width + "x" + height + ", two layers");
+}
+
+function kagShowLine(text, y)
+{
+	kagText.fillRect(30, y - 10, 610, y + 46, 0x90141820);
+	kagText.drawText(44, y, text, 0xffffffff);
+	kagWindow.update();
+	System.inform("line shown: " + text);
+}
+
+kagInit(640, 480);

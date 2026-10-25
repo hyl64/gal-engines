@@ -1,0 +1,6 @@
+#!/bin/bash
+# Test shim for `gal prep`: every encode attempt fails (hardware and libx264),
+# driving the "both encoders fail -> status failed, no .part left behind, the
+# mapping is dropped" path.
+echo "shim: total encode failure" >&2
+exit 69

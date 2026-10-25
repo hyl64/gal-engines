@@ -1,0 +1,5 @@
+*define
+game
+*start
+"Hello from onsyuri, native arm64 mac!"
+end

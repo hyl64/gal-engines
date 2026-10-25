@@ -1,0 +1,19 @@
+#!/bin/bash
+# Test shim for `gal prep`: pretend h264_videotoolbox is broken on this
+# machine, pass everything else to the real ffmpeg unchanged.
+# Used to drive the "hardware encode fails -> retry libx264 veryfast" path
+# without needing a machine that has no VideoToolbox.
+for a in "$@"; do
+  if [ "$a" = "h264_videotoolbox" ]; then
+    echo "Error setting up codec: Encoder not available (-5414)" >&2
+    exit 1
+  fi
+done
+REAL=${REAL_FFMPEG:-}
+if [ -z "$REAL" ]; then
+  for c in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /usr/bin/ffmpeg; do
+    [ -x "$c" ] && REAL=$c && break
+  done
+fi
+[ -n "$REAL" ] || { echo "shim: no real ffmpeg found (set REAL_FFMPEG)" >&2; exit 127; }
+exec "$REAL" "$@"

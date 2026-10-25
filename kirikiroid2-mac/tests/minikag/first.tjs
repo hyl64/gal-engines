@@ -1,0 +1,14 @@
+// the scenario: bring the engine up, then show the lines one call each
+kagInit(640, 480);
+
+kagShowLine("はじまりの朝。", 90);
+kagShowLine("窓の外は、まだ青い。", 180);
+kagShowLine("KiriKiri on arm64.", 270);
+
+var bg = kagText.getMainPixel(620, 460);
+var drawn = 0;
+for (var yy = 40; yy < 420; ++yy)
+	for (var xx = 30; xx < 620; ++xx)
+		if (kagText.getMainPixel(xx, yy) != bg)
+			++drawn;
+System.inform("scenario finished, pixels drawn: " + drawn);

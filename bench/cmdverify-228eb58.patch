@@ -1,0 +1,34 @@
+commit 228eb58608a830c6960ec89dd05da9af7a3e595b
+Author: gal-engines <gal@local>
+Date:   Sun Oct 25 12:27:36 2026 +0800
+
+    gal: a game missing its data files is not a pass
+    
+    The verdict only looked for engine failures, so a game whose files are absent sailed
+    through: the lifegame demo has been reported as runnable all along while asking for five
+    cursor bitmaps it does not ship.  Carrying on without them is the engine being tolerant,
+    not the game working, so 'can't find file', '*** can't', 'no decoder' and 'invalid' now
+    count against it.
+    
+    lifegame consequently reads as failing - honestly, until its data is complete.
+
+diff --git a/gal b/gal
+index 2031b9d..2d3d58b 100755
+--- a/gal
++++ b/gal
+@@ -1007,9 +1007,13 @@ def cmd_verify(args):
+     # Survival is not a compatibility test.  Catch explicit engine/script
+     # failures (including KiriKiri's Japanese exception banner) even when the
+     # host keeps its run loop alive or exits with status zero.
++    # A missing data file is a failure too: the engine may carry on without it, but
++    # the game is not running the way its author meant.  The cursor files some NScripter
++    # demos leave out are the common case.
+     error_markers = (
+-        "error", "can't open font", "krkrrun:",
+-        "エラーが発生しました", "does not exist", "exception",
++        "error", "can't open font", "can't find file", "krkrrun:",
++        "エラーが発生しました", "does not exist", "exception", "*** can't",
++        "no decoder", "invalid",
+     )
+     errors = [l for l in lines if any(m in l.lower() for m in error_markers)]
+     if proc.returncode not in (None, 0) and not timed_out:

@@ -1,0 +1,1516 @@
+#!/usr/bin/env python3
+# gal - the one command for the galgame runtimes built in this tree
+#
+# Every engine here ships its own binary and its own idea of how to be
+# started: OnscripterYuri wants --root, OpenBGI wants the game directory as
+# the working directory, and the others are partly built.  This tool hides
+# that: it looks at a game folder, works out which engine the folder belongs
+# to, keeps the result in a library, and starts the right binary in the right
+# way.
+#
+#   gal engines              what is built and where
+#   gal add <dir>            add a game folder to the library
+#                            (auto-prep for NScripter, --no-prep to skip)
+#   gal prep <game|path>     transcode .avi/.mpg/.mpeg -> _video/*.mp4 +
+#                            video_map.json (--report json for the machine view)
+#   gal list                 what is in the library
+#   gal info <game>          why the engine was recognised
+#   gal launch <game>        start it (--dry-run prints the command)
+#   gal remove <game>        drop it from the library
+#   gal doctor               check the binaries and the folders
+#   gal savetest <game>      save/load round-trip via harness/run_savetest.sh
+#                            (the harness lands with task-3; until then it says
+#                            "待接入")
+#
+# The library is a JSON file under ~/Library/Application Support/gal, so the
+# game folders stay where they are.
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import unicodedata
+
+# The engines sit beside this script (gal/gal -> ..), so a checkout works from
+# anywhere; GAL_ENGINES_ROOT overrides it when the engines live elsewhere.
+ENGINES_ROOT = os.environ.get("GAL_ENGINES_ROOT") or os.path.dirname(
+    os.path.dirname(os.path.realpath(__file__)))
+LIBRARY = os.path.expanduser("~/Library/Application Support/gal/library.json")
+
+def _reallive_binary():
+    """Where RLVM's app bundle is: beside this tree first, then a checkout of its own."""
+    candidates = [
+        os.path.join(ENGINES_ROOT, "rlvm", "build", "rlvm.app", "Contents", "MacOS", "rlvm"),
+        os.path.expanduser("~/Documents/rlvm/build/rlvm.app/Contents/MacOS/rlvm"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+# ---------------------------------------------------------------------------
+# the engines
+# ---------------------------------------------------------------------------
+#
+# Each entry says where its binary is, what a game folder of that engine looks
+# like, and how to start it.  "signatures" are (glob, weight) pairs: the
+# weight adds up and the engine with the most evidence wins, so a folder that
+# only shares one generic name is not mis-filed.
+
+ENGINES = {
+    "nscripter": {
+        "label": "NScripter → OnscripterYuri",
+        "binary": f"{ENGINES_ROOT}/OnscripterYuri/build/onsyuri",
+        "state": "ready",
+        "signatures": [
+            ("nscript.dat", 10), ("nscr_sec.dat", 10), ("00.txt", 8),
+            ("0.txt", 8), ("*.nsa", 6), ("*.ns2", 6), ("*.nt2", 6),
+            ("*.nt3", 6), ("*.dat", 2),
+        ],
+        "extras": ["--enc:sjis"],
+        "notes": "the script is usually Shift-JIS; --enc:gbk is for the Chinese ports",
+    },
+    "kirikiri": {
+        "label": "KiriKiri → Kirikiroid2",
+        "binary": f"{ENGINES_ROOT}/kirikiroid2-mac/build/krkrrun",
+        "state": "runnable",
+        "signatures": [
+            ("data.xp3", 10), ("patch.xp3", 8), ("startup.tjs", 8),
+            ("*.xp3", 6), ("*.tjs", 3),
+        ],
+        "extras": [],
+        "notes": "TJS2, XP3, the software renderer, text drawing, the window and the "
+                 "layer tree all work, and KAG3 runs its own scenario: first.ks "
+                 "reaches the screen (krkrrun --screenshot shows it)"
+    },
+    "reallive": {
+        "label": "RealLive → RLVM",
+        # the revived port lives outside this tree, as an app bundle
+        "binary": _reallive_binary(),
+        "state": "runnable",
+        "signatures": [
+            ("Seen.txt", 10), ("Gameexe.ini", 10), ("*.g00", 8),
+            ("*.nwk", 6), ("*.koe", 6), ("*.ovk", 6),
+        ],
+        "extras": [],
+        "notes": "revived for Apple Silicon: SDL3, 260/260 unit tests, an app bundle "
+                 "and a dmg; point it at a folder holding Seen.txt and Gameexe.ini",
+    },
+    "bgi": {
+        "label": "Ethornell/BGI → OpenBGI",
+        "binary": f"{ENGINES_ROOT}/openbgi/openbgi-src/bin/bgi",
+        "state": "ready",
+        "signatures": [
+            ("system.arc", 10), ("sysprg.arc", 10), ("comap.dat", 8),
+            ("BGIError.txt", 8), ("BGI.dat", 6), ("*.arc", 2),
+        ],
+        "extras": [],
+        "notes": "the engine takes the game folder as its working directory; the "
+                 "title screen and the window both render (BGI_DUMP_STAGE / "
+                 "BGI_DUMP_RENDERED show what it drew)",
+    },
+    "artemis": {
+        "label": "Artemis (from scratch)",
+        "binary": f"{ENGINES_ROOT}/artemis/build/agame",
+        "state": "partial",
+        "signatures": [("*.pfs", 10), ("*.ast", 8), ("*.iet", 8)],
+        "extras": [],
+        "notes": "written from scratch: .pfs, .ast, the scenario runtime and a "
+                 "window that plays a script; give agame a .ast to see it run",
+    },
+}
+
+# engines whose games run today, so `launch` can be honest about the rest
+RUNNABLE = {
+    "artemis", "nscripter", "bgi", "kirikiri"}
+
+
+# ---------------------------------------------------------------------------
+# detection
+# ---------------------------------------------------------------------------
+
+def scan_folder(path):
+    """Return the engine and the evidence for a game folder."""
+    try:
+        names = os.listdir(path)
+    except OSError as e:
+        return None, [], [f"无法读取目录: {e}"]
+    lowered = [n.lower() for n in names]
+    scores = {}
+    evidence = {}
+    for engine, info in ENGINES.items():
+        score = 0
+        hits = []
+        for pattern, weight in info["signatures"]:
+            if pattern.startswith("*."):
+                suffix = pattern[1:]
+                matched = [n for n in lowered if n.endswith(suffix)]
+            else:
+                matched = [n for n in lowered if n == pattern.lower()]
+            if matched:
+                score += weight
+                hits.extend(sorted(matched)[:3])
+        if score:
+            scores[engine] = score
+            evidence[engine] = sorted(set(hits))
+    if not scores:
+        return None, [], []
+    best = max(scores, key=lambda e: scores[e])
+    return best, evidence[best], []
+
+
+# ---------------------------------------------------------------------------
+# the library
+# ---------------------------------------------------------------------------
+
+def load_library():
+    try:
+        with open(LIBRARY, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"games": {}}
+
+
+def save_library(lib):
+    os.makedirs(os.path.dirname(LIBRARY), exist_ok=True)
+    tmp = LIBRARY + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(lib, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, LIBRARY)
+
+
+# ---------------------------------------------------------------------------
+# video preprocessing  (gal prep)
+# ---------------------------------------------------------------------------
+#
+# NScripter-era games ship their movies as .avi/.mpg/.mpeg, which the Mac
+# ports cannot play (no smpeg, no avifile, and Homebrew deprecated both).
+# `gal prep` transcodes them once, ahead of time, into H.264 MP4s under
+# <game>/_video/, and writes <game>/_video/video_map.json so the engine can
+# look up "the file the script names" -> "the file that actually plays".
+# The map format is fixed by gal-engines/DESIGN-VIDEO.md (version 1); do not
+# improvise fields here.
+#
+# Pipeline per file:
+#   ffprobe -> codec/SAR/DAR/fps/field order/audio/duration
+#   ffmpeg  -> yadif (if the source is interlaced) + scale to the display
+#              size with square pixels + h264_videotoolbox (hardware);
+#   on failure retry the same chain with libx264 -preset veryfast.
+# Idempotent: if the .mp4 already exists and is newer than the source, and
+# ffprobe still reads it, the file is skipped and only (re-)registered.
+#
+# GAL_FFMPEG_BIN / GAL_FFPROBE_BIN override the tool paths (used by the
+# self-test to inject a failing-encoder shim); GAL_PREP_SOFT_ONLY=1 skips the
+# hardware attempt; GAL_PREP_FFMPEG_TIMEOUT overrides the per-file timeout.
+
+VIDEO_EXTS = (".avi", ".mpg", ".mpeg")
+VIDEO_OUT_DIR = "_video"
+VIDEO_MAP_NAME = "video_map.json"
+VIDEO_MAP_VERSION = 1
+PROBE_TIMEOUT = 30
+FFMPEG_TIMEOUT = 900
+
+# ---------------------------------------------------------------------------
+# verify verdict grading  (extensible - placeholder until task-3's corpus)
+# ---------------------------------------------------------------------------
+#
+# `gal verify` counts engine failures against a game.  It must not count the
+# noise an engine makes about resources it can live without: OnscripterYuri
+# prints `*** can't find file [cursor0.bmp] ***` (and the u/d on/offcur.bmp /
+# system.lua siblings) as BUILD_NOTES' "harmless warning, the engine skips it",
+# and a blanket "any missing file fails" rule (228eb58, reverted by e447a8d)
+# mis-killed the official demos that run fine.
+#
+# The split: VERIFY_ERROR_MARKERS fails the run (unchanged behaviour),
+# VERIFY_WARN_MARKERS only gets reported.  It is empty until T3's bad-case
+# stderr corpus and the lead's whitelist proposal land; candidates already
+# seen on real data are the "*** can't find file" family above and
+# decoder chatter like "no decoder"/"invalid data" from probe-style lines.
+# Wire-in point for T3: extend the tuple below (or a per-engine dict), not the
+# matching logic.
+
+VERIFY_ERROR_MARKERS = (
+    "error", "can't open font", "krkrrun:",
+    "エラーが発生しました", "does not exist", "exception",
+)
+
+# Optional resources OnscripterYuri skips on purpose (BUILD_NOTES calls them
+# "harmless warning, the engine skips it").  Missing them must never fail a
+# run -- that is exactly what 228eb58 got wrong.  Two kinds of entry:
+#   WARN_MARKERS  plain substrings, for messages that are noise verbatim
+#   WARN_PATTERNS regexes, for families whose filenames vary per game
+# Note what is NOT here: "invalid" and "no decoder" stay out deliberately.
+# They are far too broad (they match normal ffprobe/decoder chatter) and were
+# part of the same bad commit.
+VERIFY_WARN_MARKERS = (
+    "cannot open system.lua",
+    "plugin  - not available",          # soundpressplgin, plugin-free builds
+)
+VERIFY_WARN_PATTERNS = (
+    r"can't find file \[(u|d)?(on|off)?cur(sor)?\d*\.bmp\]",  # cursors
+    r"can't find file \[system\.lua\]",
+    r"can't find file \[(doffcur|uoncur|uoffcur|doncur)\.bmp\]",
+)
+
+
+class ProbeError(Exception):
+    pass
+
+
+def ffmpeg_bin():
+    return os.environ.get("GAL_FFMPEG_BIN") or shutil.which("ffmpeg")
+
+
+def ffprobe_bin():
+    return os.environ.get("GAL_FFPROBE_BIN") or shutil.which("ffprobe")
+
+
+def _parse_ratio(text):
+    """'16:11' or '30000/1001' -> (num, den); anything unusable -> None."""
+    if not text:
+        return None
+    for sep in (":", "/"):
+        if sep in text:
+            a, _, b = text.partition(sep)
+            try:
+                n, d = int(a), int(b)
+            except ValueError:
+                return None
+            if d <= 0 or n <= 0:
+                return None
+            return n, d
+    return None
+
+
+def _round_even(x, minimum=2):
+    v = int(round(x))
+    if v % 2:
+        v -= 1
+    return max(minimum, v)
+
+
+def human_bytes(n):
+    if n is None:
+        return "-"
+    n = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024.0
+
+
+def human_dur(sec):
+    if sec is None:
+        return "-"
+    return f"{sec:.1f}s"
+
+
+def probe_media(path):
+    """ffprobe a file; return the fields the pipeline needs, or raise."""
+    exe = ffprobe_bin()
+    if not exe:
+        raise ProbeError("ffprobe 不存在（brew install ffmpeg）")
+    argv = [exe, "-v", "error", "-print_format", "json",
+            "-show_streams", "-show_format", path]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              errors="replace", timeout=PROBE_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ProbeError(f"ffprobe 启动失败: {e}")
+    if proc.returncode != 0:
+        raise ProbeError((proc.stderr or "").strip().splitlines()[-1]
+                         if proc.stderr else "ffprobe 非零退出")
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except ValueError as e:
+        raise ProbeError(f"ffprobe 输出不是 JSON: {e}")
+    streams = data.get("streams") or []
+    v = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if v is None:
+        raise ProbeError("没有视频流")
+    a = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    fmt = data.get("format") or {}
+
+    def first_float(*vals):
+        for v_ in vals:
+            try:
+                f = float(v_)
+            except (TypeError, ValueError):
+                continue
+            if f > 0:
+                return f
+        return None
+
+    duration = first_float(fmt.get("duration"), v.get("duration"),
+                           a.get("duration") if a else None)
+    fps = _parse_ratio(v.get("avg_frame_rate")) or _parse_ratio(v.get("r_frame_rate"))
+    return {
+        "codec": v.get("codec_name"),
+        "width": v.get("width"),
+        "height": v.get("height"),
+        "sar": v.get("sample_aspect_ratio") or "1:1",
+        "dar": v.get("display_aspect_ratio"),
+        "fps": (fps[0] / fps[1]) if fps else None,
+        "field_order": v.get("field_order") or "unknown",
+        "has_audio": a is not None,
+        "audio_codec": a.get("codec_name") if a else None,
+        "duration": duration,
+    }
+
+
+def target_size(info):
+    """Display size in square pixels, rounded to even, from coded size + SAR."""
+    w, h = info.get("width"), info.get("height")
+    if not w or not h:
+        raise ProbeError("ffprobe 没有给出分辨率")
+    sar = _parse_ratio(info.get("sar")) or (1, 1)
+    return _round_even(w * sar[0] / sar[1]), _round_even(h)
+
+
+def build_vf(info):
+    parts = []
+    if info.get("field_order") not in (None, "progressive", "unknown"):
+        parts.append("yadif=0:-1:0")
+    tw, th = target_size(info)
+    if (tw, th) != (info["width"], info["height"]):
+        parts.append(f"scale={tw}:{th}")
+    parts.append("setsar=1")
+    return ",".join(parts), (tw, th)
+
+
+def pick_bitrate(width, height, fps):
+    """~0.08 bits per pixel per frame for the hardware pass, clamped."""
+    bps = int(width * height * (fps or 25) * 0.08)
+    return f"{max(500_000, min(bps, 10_000_000))}"
+
+
+def ffmpeg_argv(src, dst, info, encoder, vf, size):
+    argv = [ffmpeg_bin(), "-y", "-hide_banner", "-nostdin", "-loglevel", "error",
+            "-i", src, "-map", "0:v:0"]
+    if info["has_audio"]:
+        argv += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"]
+    else:
+        argv += ["-an"]
+    argv += ["-vf", vf]
+    tw, th = size
+    if encoder == "h264_videotoolbox":
+        argv += ["-c:v", encoder,
+                 "-realtime", "0",
+                 "-b:v", pick_bitrate(tw, th, info["fps"]),
+                 "-profile:v", "high"]
+    else:
+        argv += ["-c:v", encoder, "-preset", "veryfast", "-crf", "23",
+                 "-pix_fmt", "yuv420p", "-profile:v", "high"]
+    argv += ["-movflags", "+faststart", dst]
+    return argv
+
+
+def run_one_attempt(src, dst, info, encoder, vf, size):
+    """One ffmpeg pass; True on success, (False, error_tail) otherwise."""
+    tmp = dst + ".part.mp4"
+    argv = ffmpeg_argv(src, tmp, info, encoder, vf, size)
+    timeout = float(os.environ.get("GAL_PREP_FFMPEG_TIMEOUT", FFMPEG_TIMEOUT))
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              errors="replace", timeout=timeout)
+        rc, err = proc.returncode, proc.stderr
+    except subprocess.TimeoutExpired:
+        _quiet_unlink(tmp)
+        return False, f"ffmpeg 超时（>{timeout:.0f}s）", 0.0
+    except OSError as e:
+        _quiet_unlink(tmp)
+        return False, f"ffmpeg 启动失败: {e}", 0.0
+    elapsed = time.monotonic() - started
+    if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+        os.replace(tmp, dst)
+        return True, "", elapsed
+    _quiet_unlink(tmp)
+    tail = (err or "").strip().splitlines()[-3:]
+    return False, " | ".join(tail) or f"ffmpeg 退出码 {rc}", elapsed
+
+
+def _quiet_unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def transcode_one(src, dst, info):
+    """Hardware attempt, then the libx264 retry.  Returns a record dict."""
+    vf, size = build_vf(info)
+    attempts = []
+    chain = []
+    if os.environ.get("GAL_PREP_SOFT_ONLY") != "1":
+        chain.append("h264_videotoolbox")
+    chain.append("libx264")
+    record = {"status": "failed", "encoder": None, "elapsed_sec": None,
+              "attempts": attempts, "error": None, "filter": vf,
+              "target": f"{size[0]}x{size[1]}"}
+    total = 0.0
+    for enc in chain:
+        ok, err, el = run_one_attempt(src, dst, info, enc, vf, size)
+        total += el
+        attempts.append({"encoder": enc, "ok": ok, "error": err or None,
+                         "elapsed_sec": round(el, 2)})
+        if ok:
+            record.update(status="transcoded", encoder=enc,
+                          elapsed_sec=round(el, 2))
+            return record
+        record["error"] = err
+    record["elapsed_sec"] = round(total, 2)
+    return record
+
+
+def should_skip(src, dst):
+    """Idempotence: newer non-empty target that ffprobe still reads."""
+    try:
+        if not (os.path.exists(dst) and os.path.getsize(dst) > 0):
+            return False
+        if os.path.getmtime(dst) < os.path.getmtime(src):
+            return False
+    except OSError:
+        return False
+    try:
+        probe_media(dst)
+    except ProbeError:
+        return False
+    return True
+
+
+def find_videos(game_root):
+    """Loose *.avi/.mpg/.mpeg under the game root, case-insensitive.
+
+    Returns (disk_rel, map_from) pairs, sorted by map_from.  disk_rel is the
+    path as it exists on disk; map_from is the contract spelling - relative
+    to the game root, '/' separators, '\\' folded to '/' (NScripter scripts
+    use either).  _video/ (our own output) and dot-directories are skipped."""
+    out = []
+    for root, dirs, files in os.walk(game_root):
+        dirs[:] = [d for d in sorted(dirs)
+                   if not d.startswith(".")
+                   and os.path.join(root, d) != os.path.join(game_root, VIDEO_OUT_DIR)]
+        for f in files:
+            if f.lower().endswith(VIDEO_EXTS):
+                disk = os.path.relpath(os.path.join(root, f), game_root)
+                norm = disk.replace(os.sep, "/").replace("\\", "/")
+                out.append((disk, norm))
+    return sorted(out, key=lambda p: p[1])
+
+
+# --- NSA/NS2 archives ------------------------------------------------------
+#
+# Real NScripter games are not supposed to archive their movies, but Chinese
+# repacks and dōjin titles do it anyway.  `gal prep` therefore also opens the
+# root *.nsa/*.ns2, and every entry that either ends in a video extension or
+# sniffs as a movie (RIFF/AVI, the NScripter 'AVI8' wrapper, MPEG pack or
+# sequence start) is extracted to _video/extracted/ and put through the same
+# transcode chain.  The header layout is parsed exactly as the engine reads
+# it (OnscripterYuri/src/onsyuri/{Sar,Direct}Reader.cpp):
+#   NSA: num(u16 BE) base(u32 BE) then per entry  name\0 comp(u8)
+#        offset(u32 BE, +base) length(u32 BE) orig_length(u32 BE)
+#   NS2: base(u32 LE) then per entry  "name" length(u32 LE), data laid
+#        out flat from base, no compression byte.
+# Compressed entries (comp != 0) need the engine's own decoder: the tool
+# nsadec (build: gal/prep/tools/build-nsatools.sh) is used as a fallback when
+# present; without it those entries are reported skipped_compressed, honestly.
+
+NSA_EXTS = (".nsa", ".ns2")
+NSA_EXTRACT_DIR = os.path.join(VIDEO_OUT_DIR, "extracted")
+NSA_SNIFF_BYTES = 4096
+NSADECODE_TIMEOUT = 300
+
+
+class NsaError(Exception):
+    pass
+
+
+def _nsadec_bin():
+    env = os.environ.get("GAL_NSADEC")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__ if "__file__" in globals() else "."))
+    return os.path.join(here, "prep", "tools", "nsadec")
+
+
+def sniff_video_payload(head):
+    """0 for a bare movie at the start, >0 for a wrapper offset to strip,
+    None when the bytes do not look like a movie."""
+    if len(head) < 12:
+        return None
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return 0
+    if head[:4] == b"AVI8":            # NScripter's wrapped-avi in archive
+        i = head.find(b"RIFF", 4)
+        return i if i >= 0 else None
+    if head[:4] == b"\x00\x00\x01\xba":   # MPEG-2 PS pack start
+        return 0
+    if head[:4] == b"\x00\x00\x01\xb3":   # MPEG-1 video sequence header
+        return 0
+    return None
+
+
+def nsa_list_entries(path):
+    """Parse an .nsa/.ns2 header; return [(name, offset, length, comp)]."""
+    ns2 = path.lower().endswith(".ns2")
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if ns2:
+                base = int.from_bytes(f.read(4), "little")
+                if not (0 <= base < size):
+                    raise NsaError("NS2 base_offset 越界")
+                ents = []
+                cur = base
+                while True:
+                    ch = f.read(1)
+                    if not ch:
+                        break
+                    if ch != b'"':
+                        break
+                    nm = bytearray()
+                    while True:
+                        c = f.read(1)
+                        if not c or c == b'"':
+                            break
+                        nm.append(c[0])
+                    ln4 = f.read(4)
+                    if len(ln4) < 4:
+                        break
+                    ln = int.from_bytes(ln4, "little")
+                    name = nm.decode("utf-8", "replace")
+                    ents.append((name, cur, ln, 0))
+                    cur += ln
+                return ents
+            num = int.from_bytes(f.read(2), "big")
+            base = int.from_bytes(f.read(4), "big")
+            if num > 500000 or not (0 <= base < size):
+                raise NsaError(f"NSA 头越界（num={num} base={base}）")
+            ents = []
+            for _ in range(num):
+                nm = bytearray()
+                while True:
+                    c = f.read(1)
+                    if not c:
+                        raise NsaError("NSA 头截断")
+                    if c == b"\x00":
+                        break
+                    nm.append(c[0])
+                comp = f.read(1)[0]
+                off = int.from_bytes(f.read(4), "big") + base
+                ln = int.from_bytes(f.read(4), "big")
+                f.read(4)  # original length
+                name = nm.decode("utf-8", "replace")
+                if off + ln > size:
+                    raise NsaError(f"条目 {name} 越出文件")
+                ents.append((name, off, ln, comp))
+            return ents
+    except NsaError:
+        raise
+    except (OSError, IndexError) as e:
+        raise NsaError(str(e))
+
+
+def nsa_video_entries(game_root):
+    """Archive candidates for this game root.
+
+    Returns (items, broken_archives) where items are
+    (archive_rel, entry_name_norm, offset, length, comp, strip) for every
+    entry that either names itself a movie or sniffs as one, and
+    broken_archives lists archive files whose header did not parse.
+    Compressed movie-named entries carry comp != 0; they are decoded with
+    nsadec later, only when the tool is available."""
+    items, broken = [], []
+    try:
+        names = sorted(n for n in os.listdir(game_root)
+                       if n.lower().endswith(NSA_EXTS))
+    except OSError:
+        return items, broken
+    for arc in names:
+        path = os.path.join(game_root, arc)
+        try:
+            ents = nsa_list_entries(path)
+        except NsaError:
+            broken.append(arc)
+            continue
+        for (name, off, ln, comp) in ents:
+            norm = name.replace("\\", "/")
+            strip = 0
+            if not norm.lower().endswith(VIDEO_EXTS):
+                if comp != 0:
+                    continue     # cannot sniff a compressed payload cheaply
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(off)
+                        head = f.read(min(NSA_SNIFF_BYTES, ln))
+                except OSError:
+                    continue
+                s = sniff_video_payload(head)
+                if s is None:
+                    continue
+                strip = s
+            items.append((arc, norm, off + strip, max(0, ln - strip), comp, strip))
+    return items, broken
+
+
+def strip_extracted(path, n):
+    """Drop an n-byte wrapper (the NScripter 'AVI8' header ahead of RIFF)
+    from a decoded payload, in place.  n==0 is a no-op; an OSError just keeps
+    the file as-is and lets probe/transcode report it honestly."""
+    if not n:
+        return path
+    try:
+        if os.path.getsize(path) <= n:
+            return path
+        tmp = path + ".part"
+        with open(path, "rb") as f:
+            f.seek(n)
+            data = f.read()
+        with open(tmp, "wb") as g:
+            g.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return path
+
+
+def extract_nsa_entry(game_root, arc, name, offset, length, dst_dir):
+    """Write _video/extracted/<arc>!<name> raw (no compression); returns the
+    path.  Idempotent: reused when newer than the archive and intact-sized."""
+    disk_name = (arc + "!" + name).replace("/", "_").replace("\\", "_")
+    dst = os.path.join(dst_dir, disk_name)
+    src = os.path.join(game_root, arc)
+    if (os.path.exists(dst) and os.path.getsize(dst) == length
+            and os.path.getmtime(dst) >= os.path.getmtime(src)):
+        return dst
+    os.makedirs(dst_dir, exist_ok=True)
+    tmp = dst + ".part"
+    with open(src, "rb") as f:
+        f.seek(offset)
+        with open(tmp, "wb") as g:
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                g.write(chunk)
+                remaining -= len(chunk)
+            if remaining:
+                os.unlink(tmp)
+                raise NsaError(f"条目 {name} 在 {arc} 里读不满 {length} 字节")
+    os.replace(tmp, dst)
+    return dst
+
+
+def nsadec_extract_one(game_root, arc, name, dst_dir):
+    """Fallback for compressed entries: run the engine's nsadec in a temp
+    directory (it unpacks the whole archive) and copy just our entry out.
+    Returns the extracted path or raises NsaError."""
+    tool = _nsadec_bin()
+    if not os.path.exists(tool):
+        raise NsaError("压缩条目需要 nsadec（跑 gal/prep/tools/build-nsatools.sh）")
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="gal-nsadec-") as td:
+        try:
+            proc = subprocess.run([tool, os.path.join(game_root, arc)],
+                                  cwd=td, capture_output=True, text=True,
+                                  timeout=NSADECODE_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise NsaError(f"nsadec 失败: {e}")
+        want = os.path.join(td, *name.split("/"))
+        if not os.path.exists(want):
+            raise NsaError("nsadec 没解出该条目: " +
+                           (proc.stderr or "").strip()[:120])
+        disk_name = (arc + "!" + name).replace("/", "_").replace("\\", "_")
+        dst = os.path.join(dst_dir, disk_name)
+        os.makedirs(dst_dir, exist_ok=True)
+        shutil.copyfile(want, dst)
+        return dst
+
+
+def out_name_for(rel, used):
+    """_video/<original name>.mp4; on a basename collision the flattened
+    relative path is used so two nested movies never share one output.
+
+    `rel` is the map spelling ('/' separators, '\\' folded to '/').  A file
+    whose real name contains a backslash therefore gets an output name with
+    '_' there instead: the map's `from` stays T1-normalised (T1 treats '\\'
+    and '/' as equal), and no output path ever carries a stray backslash."""
+    base = os.path.splitext(os.path.basename(rel))[0] + ".mp4"
+    base = base.replace("\\", "_")
+    if base not in used:
+        used.add(base)
+        return base
+    flat = rel.replace("/", "_").replace("\\", "_")
+    base = os.path.splitext(flat)[0] + ".mp4"
+    used.add(base)
+    return base
+
+
+def load_video_map(map_path):
+    """Existing mappings; unreadable or malformed maps are rebuilt from
+    scratch (T1 ignores bad entries anyway, and we own this file)."""
+    try:
+        with open(map_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data.get("version") == VIDEO_MAP_VERSION:
+            entries = data.get("mappings")
+            if isinstance(entries, list):
+                return [e for e in entries if isinstance(e, dict)
+                        and e.get("from") and e.get("to")]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def write_video_map(map_path, entries):
+    """Atomic write, format exactly per DESIGN-VIDEO.md (version 1)."""
+    doc = {"version": VIDEO_MAP_VERSION,
+           "mappings": [{"from": e["from"], "to": e["to"],
+                         "codec": e.get("codec", "h264"),
+                         "source": e.get("source", "loose")}
+                        for e in sorted(entries, key=lambda x: x["from"])]}
+    tmp = map_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, map_path)
+    return doc
+
+
+def _hide_root(text, game_path):
+    """Error text goes into the report and the terminal; keep the game's own
+    absolute path out of it - the relative name says enough."""
+    return text.replace(game_path + "/", "").replace(game_path, ".")
+
+
+def do_prep(game_path, game_name=None, quiet=False):
+    """Run the whole preprocessing pass over one game folder.
+
+    Returns (report, exit_code); the report is the --report json document.
+    Never touches anything outside <game>/_video/."""
+    game_path = os.path.abspath(game_path)
+    report = {"game": game_name or os.path.basename(game_path),
+              "root": game_path,
+              "map": f"{VIDEO_OUT_DIR}/{VIDEO_MAP_NAME}",
+              "generated": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+              "tools": {"ffmpeg": ffmpeg_bin(), "ffprobe": ffprobe_bin()},
+              "videos": [], "counts": {}}
+    if not os.path.isdir(game_path):
+        report["error"] = f"不是目录: {game_path}"
+        return report, 1
+    if not ffmpeg_bin() or not ffprobe_bin():
+        report["error"] = "ffmpeg/ffprobe 不存在（brew install ffmpeg）"
+        return report, 1
+
+    out_dir = os.path.join(game_path, VIDEO_OUT_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+    map_path = os.path.join(out_dir, VIDEO_MAP_NAME)
+
+    rels = find_videos(game_path)
+    # nsa/ns2 in the game root are an NScripter trait; scanning the root for
+    # them is a no-op for every other engine.  GAL_PREP_NO_NSA=1 opts out.
+    arch_items, broken_archives = ([], [])
+    if os.environ.get("GAL_PREP_NO_NSA") != "1":
+        arch_items, broken_archives = nsa_video_entries(game_path)
+    loose_names = {m for _, m in rels}
+    map_names = loose_names | {e[1] for e in arch_items}
+    prev = {e["from"]: e for e in load_video_map(map_path)}
+    # names already committed stay reserved, so a re-run never renames output
+    used = {os.path.basename(e["to"]) for e in prev.values()}
+    # entries no producer wrote this pass (e.g. nsa from another tool, or an
+    # archive we skipped via GAL_PREP_NO_NSA) survive; everything we re-scan
+    # below is recomputed from the folder
+    merged = {k: v for k, v in prev.items() if k not in map_names}
+
+    def assign_name(map_rel):
+        """Reuse the committed name when the mapping still exists; the
+        flattened rel keeps nested collisions from sharing one output."""
+        committed = prev.get(map_rel)
+        if committed:
+            name = os.path.basename(committed["to"]).replace("\\", "_")
+            used.add(name)
+            return name
+        return out_name_for(map_rel, used)
+
+    # one work list, loose first; archive items are shadowed by loose files of
+    # the same script-side name (the game's own copy wins, like at runtime)
+    work = [("loose", map_from, None) for _disk_rel, map_from in rels]
+    extract_dir = os.path.join(out_dir, "extracted")
+    seen_arch = set()
+    for (arc, ename, off, ln, comp, strip) in sorted(arch_items, key=lambda t: t[1]):
+        if ename in loose_names or ename in seen_arch:
+            if ename in seen_arch:
+                entry = {"file": ename, "origin": f"nsa:{arc}#{ename}",
+                         "status": "duplicate", "to": None, "error": None}
+                report["videos"].append(entry)
+            continue
+        seen_arch.add(ename)
+        work.append(("nsa", ename, (arc, off, ln, comp, strip)))
+
+    for kind, map_rel, ainfo in work:
+        entry = {"file": map_rel, "origin": "loose" if kind == "loose"
+                 else f"nsa:{ainfo[0]}#{map_rel}",
+                 "to": None, "source_codec": None,
+                 "source_size": None, "sar": None, "dar": None,
+                 "fps": None, "duration_sec": None, "status": None,
+                 "encoder": None, "elapsed_sec": None, "output_bytes": None,
+                 "error": None}
+        dst_name = assign_name(map_rel)
+        dst = os.path.join(out_dir, dst_name)
+        entry["to"] = f"{VIDEO_OUT_DIR}/{dst_name}"
+        if kind == "loose":
+            disk_rel = next(r for r, m in rels if m == map_rel)
+            src = os.path.join(game_path, disk_rel)
+            if disk_rel != map_rel:
+                entry["disk_file"] = disk_rel
+        else:
+            arc, off, ln, comp, strip = ainfo
+            src = None
+            try:
+                if comp == 0:
+                    # off/ln were already moved past the wrapper (e.g. the
+                    # AVI8 header) by nsa_video_entries when it sniffed one
+                    src = extract_nsa_entry(game_path, arc, map_rel, off, ln,
+                                            extract_dir)
+                else:
+                    # nsadec decodes the payload from the archive; sniff it
+                    # again here because the wrapper offset could not be read
+                    # through the compression
+                    src = nsadec_extract_one(game_path, arc, map_rel,
+                                             extract_dir)
+                    with open(src, "rb") as f:
+                        s = sniff_video_payload(f.read(NSA_SNIFF_BYTES))
+                    strip_extracted(src, s or 0)
+                entry["extracted_bytes"] = os.path.getsize(src)
+            except (NsaError, OSError) as e:
+                entry.update(status="extract_failed",
+                             error=_hide_root(str(e), game_path))
+                report["videos"].append(entry)
+                continue
+        try:
+            info = probe_media(src)
+        except ProbeError as e:
+            # the source cannot be decoded here; if an earlier run left a good
+            # transcode behind, keep its mapping - the engine can still play it
+            committed = prev.get(map_rel)
+            if committed and committed.get("to") == entry["to"] and should_skip(src, dst):
+                merged[map_rel] = {"from": map_rel, "to": entry["to"],
+                                   "codec": "h264", "source": entry["origin"]}
+                entry["output_bytes"] = os.path.getsize(dst)
+            entry.update(status="unprobeable", error=_hide_root(str(e), game_path))
+            report["videos"].append(entry)
+            continue
+        entry.update(source_codec=info["codec"],
+                     source_size=f"{info['width']}x{info['height']}",
+                     sar=info["sar"], dar=info["dar"], fps=info["fps"],
+                     duration_sec=info["duration"])
+        if should_skip(src, dst):
+            entry["status"] = "skipped"
+        else:
+            rec = transcode_one(src, dst, info)
+            entry.update(status=rec["status"], encoder=rec["encoder"],
+                         elapsed_sec=rec["elapsed_sec"], attempts=rec["attempts"],
+                         filter=rec["filter"], target_size=rec["target"])
+            if rec["status"] != "transcoded":
+                entry["error"] = _hide_root(rec["error"] or "", game_path)
+                for a in entry["attempts"]:
+                    if a.get("error"):
+                        a["error"] = _hide_root(a["error"], game_path)
+        if entry["status"] in ("transcoded", "skipped"):
+            try:
+                entry["output_bytes"] = os.path.getsize(dst)
+            except OSError:
+                entry["output_bytes"] = None
+            merged[map_rel] = {"from": map_rel, "to": entry["to"],
+                               "codec": "h264", "source": entry["origin"]}
+        report["videos"].append(entry)
+
+    for arc in broken_archives:
+        entry = {"file": arc, "origin": "archive", "status": "archive_broken",
+                 "to": None, "error": "头解析失败（可能是 key_table 加密或坏档）"}
+        report["videos"].append(entry)
+
+    map_doc = write_video_map(map_path, list(merged.values()))
+    # "found" must cover archive entries too, otherwise a game whose only
+    # movies live in arc.nsa reports "共 0 个影片：转码 1".
+    counts = {"found": len(rels) + len(seen_arch), "transcoded": 0, "skipped": 0,
+              "failed": 0, "unprobeable": 0,
+              "found_in_archives": len(seen_arch),
+              "archives": sorted({a[0] for a in arch_items}) ,
+              "broken_archives": broken_archives,
+              "mapped": len(map_doc["mappings"])}
+    for v in report["videos"]:
+        if v["status"] == "transcoded":
+            counts["transcoded"] += 1
+        elif v["status"] == "skipped":
+            counts["skipped"] += 1
+        elif v["status"] == "unprobeable":
+            counts["unprobeable"] += 1
+        else:
+            counts["failed"] += 1
+    report["counts"] = counts
+    rc = 0 if counts["failed"] == 0 and counts["unprobeable"] == 0 else 1
+    if not quiet:
+        print_prep_table(report)
+    return report, rc
+
+
+def _dwidth(s):
+    """Display width in columns (CJK labels count as two)."""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+               for c in s)
+
+
+def _pad(s, w):
+    return s + " " * max(0, w - _dwidth(s))
+
+
+def print_prep_table(report):
+    rows = [("文件", "源", "分辨率", "时长", "状态", "编码器", "耗时", "产物")]
+    for v in report["videos"]:
+        rows.append((
+            v["file"],
+            v["source_codec"] or "-",
+            f"{v['source_size']}→{v.get('target_size', '')}" if v.get("target_size")
+            else (v["source_size"] or "-"),
+            human_dur(v["duration_sec"]),
+            {"transcoded": "转码", "skipped": "跳过(幂等)", "failed": "失败",
+             "unprobeable": "不可解码"}.get(v["status"], v["status"] or "-"),
+            v["encoder"] or "-",
+            f"{v['elapsed_sec']:.1f}s" if v["elapsed_sec"] else "-",
+            human_bytes(v["output_bytes"]),
+        ))
+    widths = [max(_dwidth(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for n, r in enumerate(rows):
+        print("  ".join(_pad(c, widths[i]) for i, c in enumerate(r)).rstrip())
+        if n == 0:
+            print("  ".join("-" * w for w in widths))
+    c = report["counts"]
+    print(f"共 {c['found']} 个影片：转码 {c['transcoded']}，跳过 {c['skipped']}，"
+          f"失败 {c['failed']}，映射 {c['mapped']} 条 -> {report['map']}")
+    for v in report["videos"]:
+        if v["status"] in ("failed", "unprobeable") and v.get("error"):
+            print(f"  ! {v['file']}: {v['error'][:160]}")
+
+
+def resolve_game_dir(name_or_path):
+    """A library name or a direct folder; returns (name, abspath) or None."""
+    lib = load_library()
+    if name_or_path in lib["games"]:
+        return name_or_path, lib["games"][name_or_path]["path"]
+    path = os.path.abspath(os.path.expanduser(name_or_path))
+    if os.path.isdir(path):
+        return os.path.basename(path.rstrip("/")), path
+    return None
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+def cmd_engines(args):
+    print(f"{'引擎':<10} {'状态':<8} 二进制")
+    for name, info in ENGINES.items():
+        binary = info["binary"]
+        if binary is None:
+            state = "缺引擎"
+        elif os.path.exists(binary):
+            state = "可运行" if info["state"] in ("ready", "runnable") else "部分"
+        else:
+            state = "未构建"
+        shown = binary.replace(ENGINES_ROOT, "~") if binary else "-"
+        print(f"{name:<10} {state:<8} {shown}")
+        print(f"{'':<10} {info['label']}")
+        print(f"{'':<10} {info['notes']}")
+    return 0
+
+
+def cmd_prep(args):
+    hit = resolve_game_dir(args.game)
+    if hit is None:
+        print(f"gal: 库里没有 {args.game}，也不是一个目录: {args.game}",
+              file=sys.stderr)
+        return 1
+    name, path = hit
+    report, rc = do_prep(path, name, quiet=args.report == "json")
+    if args.report == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif report.get("error"):
+        print(f"gal: {report['error']}", file=sys.stderr)
+    return rc
+
+
+def cmd_savetest(args):
+    """Thin forwarder to the task-3 harness (harness/run_savetest.sh).
+
+    Extension point for T3: the harness owns everything under harness/; gal
+    only resolves the game folder and runs
+        harness/run_savetest.sh <game_root>
+    and passes -- through.  Until the script exists this reports 待接入."""
+    hit = resolve_game_dir(args.game)
+    if hit is None:
+        print(f"gal: 库里没有 {args.game}，也不是一个目录: {args.game}",
+              file=sys.stderr)
+        return 1
+    name, path = hit
+    script = os.environ.get("GAL_SAVETEST_SH") or \
+        os.path.join(ENGINES_ROOT, "harness", "run_savetest.sh")
+    if not os.path.exists(script):
+        print(f"gal: savetest 待接入 — harness/run_savetest.sh 不存在 ({script})")
+        print("gal: 该脚本由 task-3 提供；到位后本命令直接转发 <游戏目录> 给它")
+        return 2
+    argv = [script, path] + list(args.rest or [])
+    try:
+        return subprocess.call(argv, cwd=ENGINES_ROOT)
+    except OSError as e:
+        print(f"gal: 无法启动 {script}: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_add(args):
+    path = os.path.abspath(os.path.expanduser(args.directory))
+    # a game may be a folder or the archive it ships as
+    if os.path.isfile(path) and path.lower().endswith(".xp3"):
+        name = args.name or os.path.splitext(os.path.basename(path))[0]
+        lib = load_library()
+        lib["games"][name] = {
+            "path": path,
+            "engine": "kirikiri",
+            "evidence": [os.path.basename(path)],
+        }
+        save_library(lib)
+        info = ENGINES["kirikiri"]
+        print(f"已加入: {name}")
+        print(f"  引擎: {info['label']}")
+        print(f"  依据: {os.path.basename(path)}")
+        return 0
+    if not os.path.isdir(path):
+        print(f"gal: 不是目录，也不是 .xp3 归档: {path}", file=sys.stderr)
+        return 1
+    engine, evidence, problems = scan_folder(path)
+    if problems:
+        for p in problems:
+            print(f"gal: {p}", file=sys.stderr)
+        return 1
+    if engine is None:
+        print(f"gal: 认不出这个目录属于哪个引擎: {path}", file=sys.stderr)
+        print("gal: 已知特征见 `gal engines`", file=sys.stderr)
+        return 1
+    name = args.name or os.path.basename(path.rstrip("/"))
+    lib = load_library()
+    lib["games"][name] = {
+        "path": path,
+        "engine": engine,
+        "evidence": evidence,
+    }
+    save_library(lib)
+    info = ENGINES[engine]
+    print(f"已加入: {name}")
+    print(f"  引擎: {info['label']}")
+    print(f"  依据: {', '.join(evidence)}")
+    if info["state"] != "ready":
+        print(f"  注意: {info['notes']}")
+    # preprocessing: only NScripter auto-preps in the first version; the same
+    # do_prep() is the shared mechanism for the later engines, just not
+    # wired to fire here yet.
+    if engine == "nscripter" and not args.no_prep:
+        print("  预处理: 扫描 .avi/.mpg/.mpeg 并转码到 _video/（--no-prep 跳过）")
+        report, rc = do_prep(path, name, quiet=False)
+        if rc != 0 and not report.get("error"):
+            print("  预处理有未成功项（不影响入库），可单独跑 gal prep "
+                  f"{name} 重转")
+    elif engine == "nscripter":
+        print("  预处理: 已跳过（--no-prep），需要时跑 gal prep "
+              f"{name}")
+    return 0
+
+
+def cmd_list(args):
+    lib = load_library()
+    games = lib["games"]
+    if not games:
+        print("库里没有游戏。用 `gal add <目录>` 加一个。")
+        return 0
+    width = max(len(n) for n in games)
+    for name, g in sorted(games.items()):
+        engine = g["engine"]
+        label = ENGINES.get(engine, {}).get("label", engine)
+        mark = "✓" if engine in RUNNABLE else "·"
+        print(f"{mark} {name:<{width}}  {label}")
+        print(f"  {'':<{width}}  {g['path']}")
+    return 0
+
+
+def cmd_info(args):
+    lib = load_library()
+    game = lib["games"].get(args.game)
+    if game is None:
+        print(f"gal: 库里没有 {args.game}", file=sys.stderr)
+        return 1
+    engine = game["engine"]
+    info = ENGINES.get(engine, {})
+    print(f"游戏: {args.game}")
+    print(f"目录: {game['path']}")
+    print(f"引擎: {info.get('label', engine)}")
+    print(f"依据: {', '.join(game.get('evidence', []))}")
+    binary = info.get("binary")
+    print(f"二进制: {binary if binary else '(无)'}"
+          f"{'' if binary and os.path.exists(binary) else ' [不存在]'}")
+    print(f"说明: {info.get('notes', '')}")
+    return 0
+
+
+def build_command(name, game, extra):
+    """The binary, argv and working directory that start this game."""
+    info = ENGINES[game["engine"]]
+    binary = info["binary"]
+    path = game["path"]
+    if game["engine"] == "nscripter":
+        argv = [binary, "--root", path] + info["extras"]
+        return argv, path
+    if game["engine"] == "kirikiri" and os.path.isfile(path):
+        return [binary, path] + info["extras"], info.get("cwd") or os.path.dirname(path)
+    if game["engine"] == "kirikiri":
+        # a game ships as data.xp3 (or a name of its own); the port can run one
+        archives = sorted(f for f in os.listdir(path) if f.lower().endswith(".xp3")) \
+            if os.path.isdir(path) else []
+        if archives:
+            primary = os.path.join(path, "data.xp3")
+            chosen = primary if os.path.exists(primary) else os.path.join(path, archives[0])
+            return [binary, chosen] + info["extras"], path
+        # otherwise the project's sources sit in the folder, starting at startup.tjs
+        entry = os.path.join(path, "startup.tjs")
+        if not os.path.exists(entry):
+            entry = None
+            for root, dirs, files in os.walk(path):
+                for f in sorted(files):
+                    if f == "startup.tjs":
+                        entry = os.path.join(root, f)
+                        break
+                if entry:
+                    break
+        argv = [binary] + ([entry] if entry else [])
+        return argv, path
+    if game["engine"] == "artemis":
+        # the player takes a script; the game's own are under root/script
+        script = None
+        for root, dirs, files in os.walk(path):
+            for f in sorted(files):
+                if f.endswith(".ast"):
+                    script = os.path.join(root, f)
+                    break
+            if script:
+                break
+        if script is None:
+            return [binary], path
+        return [binary, script] + info["extras"], path
+    if game["engine"] == "bgi":
+        # the BGI engine reads the game's files from its working directory
+        return [binary] + info["extras"], path
+    return [binary] + info["extras"], path
+
+
+def cmd_launch(args):
+    lib = load_library()
+    game = lib["games"].get(args.game)
+    if game is None:
+        print(f"gal: 库里没有 {args.game}", file=sys.stderr)
+        return 1
+    engine = game["engine"]
+    info = ENGINES.get(engine, {})
+    if engine not in RUNNABLE:
+        print(f"gal: {info.get('label', engine)} 还跑不了游戏", file=sys.stderr)
+        print(f"gal: {info.get('notes', '')}", file=sys.stderr)
+        return 1
+    binary = info["binary"]
+    if not os.path.exists(binary):
+        print(f"gal: 引擎二进制不存在: {binary}", file=sys.stderr)
+        print("gal: 先在对应引擎目录里构建（见各目录的 BUILD_NOTES.md）", file=sys.stderr)
+        return 1
+    if not os.path.exists(game["path"]):
+        print(f"gal: 游戏不在了: {game['path']}", file=sys.stderr)
+        return 1
+    # BGI trials ship as installers: the engine boots them and their own boot
+    # program then asks for the installation media and quits
+    if game["engine"] == "bgi":
+        # a trial often ships as an installer next to already-installed data; only
+        # refuse when nothing installed is there
+        path_now = game["path"]
+        has_data = any(f.startswith("data") and f.endswith(".arc")
+                       for f in os.listdir(path_now)) if os.path.isdir(path_now) else False
+        if not has_data:
+            for marker in ("Setup.exe", "BGIForInstalling.exe"):
+                if os.path.exists(os.path.join(path_now, marker)):
+                    print(f"gal: {args.game} 是安装包，还没有装出游戏数据", file=sys.stderr)
+                    print("gal: 请指向安装后的目录（含 data*.arc）", file=sys.stderr)
+                    return 1
+    # NScripter writes its cross-platform save into <game>/sav/ and silently
+    # gives up when that directory is missing -- it then only keeps the private
+    # ONScripter format next to the script, which the Windows original cannot
+    # read.  Creating it costs nothing and is what makes the saves portable.
+    # (Measured: harness/results.md, "存档落在哪里".)
+    if engine == "nscripter":
+        sav_dir = os.path.join(game["path"], "sav")
+        if not os.path.isdir(sav_dir):
+            try:
+                os.makedirs(sav_dir, exist_ok=True)
+                print(f"gal: 已创建存档目录 {sav_dir}（NScripter 兼容存档写这里）")
+            except OSError as e:
+                print(f"gal: 建不了存档目录 {sav_dir}: {e}", file=sys.stderr)
+    argv, cwd = build_command(args.game, game, args.extra)
+    # the KiriKiri port processes the framework's timer-driven execution in a loop,
+    # so it is given one for as long as the window is up
+    run_env = dict(os.environ)
+    if game["engine"] == "kirikiri":
+        run_env.setdefault("KRKR_LOOP_SECONDS", "600")
+    else:
+        run_env = None
+    if getattr(args, "dump", None):
+        out = os.path.abspath(args.dump)
+        # the KiriKiri port takes --screenshot and the BGI engine writes the surface
+        # it draws; either way a title can be looked at with no screen
+        if engine == "kirikiri":
+            env = dict(os.environ)
+            env.setdefault("SDL_VIDEODRIVER", "dummy")
+            env.setdefault("KRKR_LOOP_SECONDS", "3")
+            rc = subprocess.call(argv + ["--screenshot", out], cwd=cwd, env=env,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ok = os.path.exists(out) and os.path.getsize(out) > 1024
+            print(f"gal: {'已导出' if ok else '没有导出'} {out}")
+            return 0 if ok else 1
+        if engine != "bgi":
+            print(f"gal: {engine} 不支持无头导出画面", file=sys.stderr)
+            return 1
+        env = dict(os.environ)
+        env["BGI_DUMP_STAGE"] = os.path.abspath(args.dump)
+        env.setdefault("SDL_VIDEODRIVER", "dummy")
+        # Do not terminate an unrelated game with pkill -f bin/bgi.  If another
+        # instance holds the engine lock, this probe will fail honestly.
+        proc = subprocess.Popen(argv, cwd=cwd, env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            proc.wait(timeout=14)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        ok = os.path.exists(args.dump) and os.path.getsize(args.dump) > 1024
+        print(f"gal: {'已导出' if ok else '没有导出'} {args.dump}")
+        return 0 if ok else 1
+    if args.dry_run:
+        print(f"cwd:  {cwd}")
+        print(f"argv: {' '.join(argv)}")
+        return 0
+    print(f"启动 {args.game} → {info['label']}")
+    try:
+        return subprocess.call(argv, cwd=cwd, env=run_env if run_env else None)
+    except KeyboardInterrupt:
+        return 130
+
+
+def cmd_verify(args):
+    """Start the engine headless for a few seconds and report what it said."""
+    lib = load_library()
+    game = lib["games"].get(args.game)
+    if game is None:
+        print(f"gal: 库里没有 {args.game}", file=sys.stderr)
+        return 1
+    engine = game["engine"]
+    info = ENGINES.get(engine, {})
+    if engine not in RUNNABLE:
+        print(f"gal: {info.get('label', engine)} 还跑不了游戏", file=sys.stderr)
+        return 1
+    argv, cwd = build_command(args.game, game, [])
+    # the same environment a launch gets: the KiriKiri port needs its loop to be
+    # "still running" at all
+    run_env = dict(os.environ)
+    if game["engine"] == "kirikiri":
+        run_env.setdefault("KRKR_LOOP_SECONDS", "600")
+    else:
+        run_env = None
+    if not os.path.exists(argv[0]) or not (os.path.isdir(cwd) or os.path.isfile(cwd)):
+        print("gal: 二进制或游戏目录不存在", file=sys.stderr)
+        return 1
+    env = dict(run_env if run_env else os.environ)
+    env["SDL_VIDEODRIVER"] = "dummy"
+    env["SDL_AUDIODRIVER"] = "dummy"
+    quiet_json = getattr(args, "report", None) == "json"
+    if not quiet_json:
+        print(f"试跑 {args.seconds}s（无窗口）: {args.game}")
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors="replace")
+    except OSError as e:
+        print(f"gal: 启动失败: {e}", file=sys.stderr)
+        return 1
+    started = time.monotonic()
+    try:
+        out, _ = proc.communicate(timeout=args.seconds)
+        # the engine exiting on its own inside the window means it ran a script
+        # that ends, which is a pass too - unless it gave up straight away,
+        # which is what a missing data file looks like: the engine's own error
+        # box can be suppressed, so the quiet early exit is the only clue
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+        timed_out = True
+    elapsed = time.monotonic() - started
+    lines = [l for l in (out or "").splitlines() if l.strip()]
+    # Survival is not a compatibility test.  Catch explicit engine/script
+    # failures (including KiriKiri's Japanese exception banner) even when the
+    # host keeps its run loop alive or exits with status zero.  Lines matching
+    # VERIFY_WARN_MARKERS are engine noise about optional resources and only
+    # get reported, never counted against the verdict - that set is a graded
+    # placeholder until task-3's corpus and the lead's whitelist land.
+    lowered = [(l, l.lower()) for l in lines]
+    errors = [l for l, low in lowered
+              if any(m in low for m in VERIFY_ERROR_MARKERS)]
+    warn_res = [re.compile(pat, re.I) for pat in VERIFY_WARN_PATTERNS]
+    warns = [l for l, low in lowered
+             if (any(m in low for m in VERIFY_WARN_MARKERS)
+                 or any(r.search(low) for r in warn_res))
+             and not any(m in low for m in VERIFY_ERROR_MARKERS)]
+    if proc.returncode not in (None, 0) and not timed_out:
+        errors.append(f"engine exited with status {proc.returncode}")
+    if errors:
+        verdict, ok = f"✗ 有报错（{len(errors)} 条）", False
+    elif timed_out:
+        verdict, ok = f"✓ 进入主循环（活过 {elapsed:.1f}s）", True
+    elif elapsed < 2.0:
+        verdict, ok = f"⚠ 启动后 {elapsed:.1f}s 就退出：多半缺数据或脚本出错被抑制", False
+    else:
+        verdict, ok = f"✓ 脚本正常结束（跑了 {elapsed:.1f}s）", True
+    if quiet_json:
+        print(json.dumps({
+            "game": args.game, "engine": engine, "seconds": args.seconds,
+            "elapsed_sec": round(elapsed, 2), "returncode": proc.returncode,
+            "timed_out": timed_out, "line_count": len(lines),
+            "verdict": "pass" if ok else "fail", "ok": ok,
+            "errors": [e.strip() for e in errors],
+            "warnings": [w.strip() for w in warns],
+        }, ensure_ascii=False, indent=2))
+        return 0 if ok else 1
+    if errors:
+        print("  ✗ 有报错:")
+        for l in errors[:5]:
+            print(f"    {l.strip()}")
+        print("  结论: 跑不起来")
+        return 1
+    print(f"  {verdict} ({len(lines)} 行输出)")
+    for l in lines[:3]:
+        print(f"    {l.strip()}")
+    for w in warns[:3]:
+        print(f"    (可选资源/噪音) {w.strip()}")
+    print(f"  结论: {'可以运行' if ok else '不算跑通'}")
+    return 0 if ok else 1
+
+
+def cmd_remove(args):
+    lib = load_library()
+    if args.game not in lib["games"]:
+        print(f"gal: 库里没有 {args.game}", file=sys.stderr)
+        return 1
+    del lib["games"][args.game]
+    save_library(lib)
+    print(f"已移除: {args.game}")
+    return 0
+
+
+def cmd_doctor(args):
+    ok = True
+    print("引擎二进制:")
+    for name, info in ENGINES.items():
+        binary = info["binary"]
+        if binary is None:
+            print(f"  · {name}: 还没有实现")
+            continue
+        exists = os.path.exists(binary)
+        ok = ok and exists
+        mark = "✓" if exists else "✗"
+        print(f"  {mark} {name}: {binary}")
+    print("\n自检:")
+    for tool in ("cmake", "brew", "ffmpeg", "ffprobe"):
+        print(f"  {'✓' if shutil.which(tool) else '✗'} {tool}"
+              + ("" if tool not in ("ffmpeg", "ffprobe")
+                 else "   (gal prep 需要)"))
+    lib = load_library()
+    # a game may be an archive file rather than a folder
+    missing = [n for n, g in lib["games"].items() if not os.path.exists(g["path"])]
+    for n in missing:
+        print(f"  ✗ {n}: 目录不在了 ({lib['games'][n]['path']})")
+        ok = False
+    if not missing:
+        print(f"  ✓ 库里的 {len(lib['games'])} 个游戏目录都在")
+    return 0 if ok else 1
+
+
+# ---------------------------------------------------------------------------
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="gal", description="galgame 运行时管理器")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("engines", help="引擎状态").set_defaults(func=cmd_engines)
+
+    p = sub.add_parser("add", help="把一个游戏目录加进库")
+    p.add_argument("directory")
+    p.add_argument("--name", help="库里的名字（默认用目录名）")
+    p.add_argument("--no-prep", action="store_true",
+                   help="识别引擎后不自动做影片预处理（目前只对 NScripter 生效）")
+    p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("prep", help="把游戏里的 .avi/.mpg/.mpeg 预转码到 _video/ 并写 video_map.json")
+    p.add_argument("game", metavar="game|path", help="库里的名字或游戏目录")
+    p.add_argument("--report", choices=["table", "json"], default="table",
+                   help="table（默认，给人看）或 json（机器可读，含源codec/分辨率/时长/耗时/产物大小）")
+    p.set_defaults(func=cmd_prep)
+
+    p = sub.add_parser("savetest", help="存读档往返测试（转发 harness/run_savetest.sh，由 task-3 提供）")
+    p.add_argument("game", metavar="game|path")
+    p.add_argument("rest", nargs="*", help="-- 之后的参数原样转发给 harness")
+    p.set_defaults(func=cmd_savetest)
+
+    sub.add_parser("list", help="列出库").set_defaults(func=cmd_list)
+
+    p = sub.add_parser("info", help="一个游戏的检测详情")
+    p.add_argument("game")
+    p.set_defaults(func=cmd_info)
+
+    p = sub.add_parser("play", aliases=["launch"], help="启动游戏")
+    p.add_argument("game")
+    p.add_argument("--dry-run", action="store_true", help="只打印命令，不启动")
+    p.add_argument("--dump", metavar="BMP", help="无头跑几秒，把引擎画的画面存成 BMP（引擎需支持）")
+    p.add_argument("extra", nargs="*", help="传给引擎的额外参数")
+    p.set_defaults(func=cmd_launch)
+
+    p = sub.add_parser("verify", help="试跑一个游戏看能不能起来")
+    p.add_argument("game")
+    p.add_argument("--seconds", type=int, default=5, help="试跑多少秒（默认 5）")
+    p.add_argument("--report", choices=["table", "json"], default="table",
+                   help="table（默认）或 json（含 verdict/errors/warnings，与 gal prep 同风格）")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("remove", help="从库里移除")
+    p.add_argument("game")
+    p.set_defaults(func=cmd_remove)
+
+    sub.add_parser("doctor", help="自检").set_defaults(func=cmd_doctor)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

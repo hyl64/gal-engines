@@ -1,0 +1,1 @@
+/opt/homebrew/opt/libarchive/include/archive_entry.h

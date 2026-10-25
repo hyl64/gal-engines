@@ -1,0 +1,106 @@
+11:53:39 OS : macOS (macOS)
+11:53:39 KAG : 3.32 stable rev. 2
+11:53:39 Kirikiri : 2.32.0.0
+11:53:39 (info) Rebuilding Auto Path Table ...
+11:53:39 (info) Total 88 file(s) found, 55 file(s) activated. (3ms)
+11:53:39 Config.tjs を読み込みました(1ms)
+11:53:39 UpdateConfig.tjs を読み込みました(1ms)
+11:53:39 KAG System スクリプトを読み込んでいます...
+11:53:39 Utils.tjs を読み込みました(0ms)
+11:53:39 KAGLayer.tjs を読み込みました(1ms)
+11:53:39 HistoryLayer.tjs を読み込みました(2ms)
+11:53:39 BGM.tjs を読み込みました(0ms)
+11:53:39 SE.tjs を読み込みました(1ms)
+11:53:39 Movie.tjs を読み込みました(1ms)
+11:53:39 Conductor.tjs を読み込みました(0ms)
+11:53:39 AnimationLayer.tjs を読み込みました(2ms)
+11:53:39 GraphicLayer.tjs を読み込みました(1ms)
+11:53:39 MessageLayer.tjs を読み込みました(6ms)
+11:53:39 Menus.tjs を読み込みました(1ms)
+11:53:39 DefaultMover.tjs を読み込みました(0ms)
+11:53:39 MainWindow.tjs を読み込みました(7ms)
+11:53:39 スクリプトの読み込みに 25ms かかりました
+11:53:39 (info) Use malloc for Bitmap
+11:53:39 KAGMainWindow のコンストラクタで 15ms かかりました
+11:53:39 ================================================================================
+11:53:39 Scenario loaded : first.ks
+11:53:39 処理を開始します
+11:53:39 first.ks : 
+11:53:39 first.ks : [startanchor]
+[Information] ファイルに保存できません (ファイルを開けないか、書き込み禁止です)
+11:53:39 first.ks : [wait time=200]
+11:53:40 first.ks : 
+11:53:40 first.ks : [macro name=clear]
+11:53:40 first.ks : [cm]
+11:53:40 first.ks : [call storage=uiscript.ks target=*uisetup]
+11:53:40 first.ks : [endmacro]
+11:53:40 macro : clear : [cm][call storage=uiscript.ks target=*uisetup]
+11:53:40 first.ks : [macro name=countup]
+11:53:40 first.ks : [eval exp="sf.pos = sf.pos + 1"]
+11:53:40 first.ks : [endmacro]
+11:53:40 macro : countup : [eval exp="sf.pos = sf.pos + 1"]
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : 
+11:53:40 first.ks : [jump storage=0.ks target=*1]
+11:53:40 ================================================================================
+11:53:40 Scenario loaded : 0.ks
+11:53:40 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+11:53:40 0.ks : jumped to : *1
+11:53:40 0.ks : ラベル/ページ : *1/
+11:53:40 0.ks : 
+11:53:40 0.ks : ラベル/ページ : *1:2/
+11:53:40 0.ks : 
+11:53:40 0.ks : [rclick enabled=false]
+11:53:40 0.ks : [image storage="bg0" page=fore layer=base]
+11:53:40 bg0 の読み込みに 8ms かかりました
+11:53:40 0.ks : [position layer=message opacity=0]
+11:53:40 0.ks : 
+11:53:40 0.ks : 
+11:53:40 0.ks : [locate x=1000 y=400]
+11:53:40 0.ks : [button graphic=start storage=1.ks target=*1]
+11:53:40 ButtonLayer.tjs を読み込みました(1ms)
+11:53:40 0.ks : [locate x=1000 y=470]
+11:53:40 0.ks : [button graphic=setting storage=setting.ks target=*setting]
+11:53:40 0.ks : 
+11:53:40 0.ks : [s]
+11:53:44 ================================================================================
+11:53:44 Scenario loaded : 1.ks
+11:53:44 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+11:53:44 1.ks : jumped to : *1
+11:53:44 処理を開始します
+11:53:44 1.ks : ラベル/ページ : *1/
+11:53:44 1.ks : 
+11:53:44 1.ks : 
+11:53:44 1.ks : [rclick enabled=true]
+11:53:44 1.ks : [clear]
+11:53:44 1.ks : call stack depth before calling : 0
+11:53:44 ================================================================================
+11:53:44 Scenario loaded : uiscript.ks
+11:53:44 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+11:53:44 uiscript.ks : jumped to : *uisetup
+11:53:44 uiscript.ks : [position layer=message opacity=150 left=32 top=580 width=1200 height=150]
+11:53:44 uiscript.ks : [delay speed=nowait]
+11:53:44 uiscript.ks : [locate x=1000 y=80]
+11:53:44 uiscript.ks : [link storage="setting.ks" target=*setting]setting[endlink]
+11:53:44 uiscript.ks : [locate x=0 y=0]
+11:53:44 uiscript.ks : [delay speed=user]
+11:53:44 uiscript.ks : [return]
+11:53:44 ================================================================================
+11:53:44 Scenario loaded : 1.ks
+11:53:44 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+11:53:44 1.ks : jumped to : *1
+11:53:44 1.ks : returned to : *1 line offset 11
+11:53:44 1.ks : call stack depth after returning : 0
+11:53:44 1.ks : [countup]
+11:53:44 1.ks : The current message # is [emb exp="sf.pos"][l][r]
+11:53:44 Script exception raised
+The object is already invalidated
+11:53:44 trace : immediate event
+wrote /tmp/R1.bmp (1280x720, presented frame)

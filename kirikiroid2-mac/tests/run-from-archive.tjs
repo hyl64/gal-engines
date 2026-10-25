@@ -1,0 +1,3 @@
+var p = "file:///Users/huangyuliang/Documents/gal-engines/testdata/kag3.xp3>startup.tjs";
+try { System.inform("exists: " + Storages.isExistentStorage(p)); } catch(e) { System.inform("exists err: " + e.message); }
+try { Scripts.execStorage(p); System.inform("executed"); } catch(e) { System.inform("exec err: " + e.message); }

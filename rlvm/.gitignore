@@ -1,0 +1,11 @@
+build/
+build_*
+.sconf_temp/
+config.log
+unittests_*.log
+.DS_Store
+shots/
+deliverable-*.png
+.sconsign.dblite
+__pycache__/
+*.pyc

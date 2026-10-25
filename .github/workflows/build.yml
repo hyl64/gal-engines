@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Apple Silicon runner: these ports are arm64-only.
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 \
+                       sdl12-compat lua jpeg-turbo libpng lz4 ffmpeg bzip2 boost \
+                       gettext libogg libvorbis libsndfile
+          echo "--- versions ---"
+          cmake --version | head -1
+          scons --version | head -2
+          brew --prefix sdl2
+
+      - name: Build all five engines
+        run: ./build-all.sh
+
+      - name: Checks that need no game data
+        # Everything else needs a game the repository deliberately does not ship
+        # (docs/DATA.md).  These two exercise real code paths on their own:
+        # 260 RLVM unit tests, and Artemis's pfs/ast/runtime layers.
+        run: ./build-all.sh --check --skip nscripter --skip kirikiri --skip bgi --skip artemis
+
+      - name: Artemis self tests in full
+        run: ./build-all.sh --check --skip nscripter --skip kirikiri --skip bgi --skip reallive
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for f in /tmp/gal_build_*.log /tmp/gal_*.log; do
+            [ -f "$f" ] || continue
+            echo "=== $f ==="
+            tail -60 "$f"
+          done
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            /tmp/gal_build_*.log
+            /tmp/gal_*.log
+          if-no-files-found: ignore
+          retention-days: 7

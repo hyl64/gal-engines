@@ -1,0 +1,42 @@
+// A TJS2 exercise: the constructs the KAG scenarios lean on.
+
+var s = "KiriKiri";
+System.inform("string: " + s + " len=" + s.length);
+
+var a = [3, 1, 2];
+a.sort();
+System.inform("array: " + a.join(","));
+
+var d = %[];
+d["engine"] = "KiriKiri2";
+d["script"] = "TJS2";
+System.inform("dict: " + d["engine"] + " / " + d["script"]);
+
+function add(x, y) { return x + y; }
+System.inform("function: " + add(40, 2));
+
+class Base {
+	var name = "base";
+	function Describe() { return "I am " + name; }
+}
+class Derived extends Base {
+	function Describe() { return "I am " + name + " (derived)"; }
+}
+var o = new Derived();
+o.name = "Derived";
+System.inform("class: " + o.Describe());
+
+var re = /(\w+)@(\w+)\.(\w+)/;
+var m = re.exec("contact: dee@kikyou.info");
+System.inform("regexp: " + m[0] + " -> " + m[1] + "/" + m[2] + "." + m[3]);
+
+System.inform("number: " + 255 + " + 1 = " + (255 + 1));
+System.inform("os: " + System.osName);
+
+try {
+	throw new Exception("thrown on purpose");
+} catch(e) {
+	System.inform("caught: " + e.message);
+}
+
+System.inform("done");

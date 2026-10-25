@@ -1,0 +1,17 @@
+// The storage layer from a script: plain files and files inside an XP3.
+//
+// Run it against the fixture tests/make_xp3.py writes:
+//     python3 tests/make_xp3.py /tmp/test.xp3 a.txt=... b.txt=... dir/c.bin=...
+//     ./build/krkrscript tests/storage.tjs
+//
+// The archive is named absolutely: the engine canonicalises relative names
+// (its "./" disappears), so an in-archive name needs a path that survives
+// that, and the host adds the current folder to the search path only for
+// plain files.
+
+System.inform("plain file exists:    " + Storages.isExistentStorage("file:///tmp/test.xp3"));
+System.inform("plain file missing:   " + Storages.isExistentStorage("file:///tmp/nope.bin"));
+System.inform("in archive, present:  " + Storages.isExistentStorage("file:///tmp/test.xp3>a.txt"));
+System.inform("in archive, nested:   " + Storages.isExistentStorage("file:///tmp/test.xp3>dir/c.bin"));
+System.inform("in archive, absent:   " + Storages.isExistentStorage("file:///tmp/test.xp3>nope.txt"));
+System.inform("done");

@@ -1,0 +1,29 @@
+// A window, a layer, a fill and two lines of text - all through the engine's own
+// script objects.  This is the first thing in the port that uses the layer
+// system end to end, and it needs no game data.
+//
+//   krkrrun tests/layer.tjs
+
+var win = new Window();
+win.setInnerSize(640, 480);
+
+var layer = new Layer(win, null);
+layer.setSize(640, 480);
+layer.fillRect(0, 0, 640, 480, 0xff204060);
+layer.drawText(40, 60, "レイヤーに描けた", 0xfff0f0f0);
+layer.drawText(40, 140, "KiriKiri on arm64", 0xffeecc88);
+
+System.inform("layer: " + layer.width + "x" + layer.height);
+
+// how much of the picture the text actually changed: the fill must not cover
+// the glyphs, and the glyphs must not be missing
+var bg = layer.getMainPixel(600, 400);
+var drawn = 0;
+for (var y = 40; y < 180; ++y)
+  for (var x = 30; x < 420; ++x)
+    if (layer.getMainPixel(x, y) != bg)
+      ++drawn;
+
+System.inform("background: " + bg);
+System.inform("pixels drawn: " + drawn);
+System.inform(drawn > 200 ? "layer drawing works" : "nothing was drawn");
