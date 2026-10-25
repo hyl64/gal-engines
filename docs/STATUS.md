@@ -169,5 +169,9 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
    剩余：`setloop` 上屏。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
 3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
-4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。
+4. **Artemis**：第二部作品的画面需要 Lua 宿主——API 面已从真实样本提取
+   （~70 调用/单文件，全量预计 80–120 引擎函数；全局状态模型 gscr/flg/sv；
+   .asb 容器魔数已识别），规格与工作量分解见
+   [artemis-lua-host.md](artemis-lua-host.md)（约 9–12 轮的独立工程）。
+   另：`.psb` 语料为 0、`movie` 语料为 0、`scetween` 槽位未接。
 5. **通用**：GUI 菜单点击路径未自动验证（命令级路径与它共用同一套读写函数）。
