@@ -95,3 +95,30 @@ g     求值命名空间（get_eval("g.rur") 直接读引擎变量）
 
 **阶段 2 剩余**：csv 数据层（解析 tbl → csv 表）→ title_init 跑完 →
 阶段 3 的 UI 类 API 实装。
+
+
+## 阶段 2 完成（2026-10-26）：pf8 标题的完整启动链跑通，title_init 正常返回
+
+引擎的启动序列全部在宿主里执行：
+
+```
+init.lua → system_loadinglua()（54 个文件经真实的 e:include、game 全局、
+           平台探测、list_wasm.tbl）→ system_initialize()（vartable_init、
+           storage_path→set_uipath、字体、键位）→ title_init()
+```
+
+`title_init` 完整执行（csv["ui_title"]、按钮表、screen_crop、
+title_load2info……），exit 0，**872 次引擎调用**。
+
+宿主实装（非桩）：`e:include`、`e:var`（屏幕尺寸/game.os）、
+`e:getScriptStack`、`get_language`、`get_eval`。其余 API 留给阶段 3。
+
+过程中修掉的五个真实缺陷（每次都付出了崩溃的代价）：
+1. 桩返回 false 而非 0（Lua 里 0 是真值，getTrial() 误入体验版分支）
+2. `luaL_dofile` 失败后必须 pop 错误消息（否则栈失衡，csv 被赋成错误文本）
+3. `lua_upvalueindex` 超过闭包 upvalue 数是越界访问
+4. auto-vivify 破坏 `conf.language or default` 链——conf 用普通空表
+5. 各平台 tbl 定义同名全局——全加载会让 readdir 顺序决定平台，只载 wasm
+
+**阶段 3**：title_init 里 e:tag 发出的精灵命令（bg01/char/logo/trial 等，
+`csv["ui_title"]` 里有完整定义）接到真实渲染——出画面。
