@@ -223,6 +223,27 @@ public:
             }
         }
         SDL_UnlockSurface(surface);
+        {
+            /* Post-blit sample: what the destination surface actually holds at
+             * the movie's centre after the copy.  Distinguishes "the blit wrote
+             * content but the present shows black" from "the blit wrote black". */
+            static int on = -1;
+            static long n = 0;
+            if (on < 0){ const char *e = getenv("ONS_TRACE_LAYER_FRAME"); on = (e && *e) ? 1 : 0; }
+            if (on && (++n % 60) == 0){
+                SDL_LockSurface(surface);
+                const uint8_t *q = (const uint8_t*)surface->pixels
+                                 + (size_t)(surface->h/2) * surface->pitch
+                                 + (size_t)(surface->w/2) * 4;
+                FILE *df = fopen("ons_layerblit.log", "a");
+                if (df){
+                    fprintf(df, "blit#%ld surface centre=%02x%02x%02x (movie %dx%d at %d,%d)\n",
+                            n, q[0], q[1], q[2], last_w, last_h, pos_x, pos_y);
+                    fclose(df);
+                }
+                SDL_UnlockSurface(surface);
+            }
+        }
     }
 
 private:
