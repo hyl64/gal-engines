@@ -145,9 +145,11 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
 
 ## 已知缺口（一条没藏）
 
-1. **NScripter**：~~C3 崩溃~~ 已修复（`Page::add` 零长缓冲增长缺陷）；
-   剩余：盲点击深处的 `NSPopComma` 脚本级分歧（honpen_inaka1:4592）、
-   正文画在屏幕顶部而非对话框、`setloop` 画面上屏、编号存档槽与振假名未测。
+1. **NScripter**：~~C3 崩溃~~ 已修复。剩余两项具体工作：
+   ① `NSPopComma` 脚本级分歧——盲点击 15 分钟深处必到 honpen_inaka1:4592（三次一致），
+      需要对齐 Lua 桥的 end-status 跟踪；
+   ② 正文画进对话框（保留 setwindow3、只跳过 `_print`）。
+   另：`setloop` 画面上屏、编号存档槽与振假名未测。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
 3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
 4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。
