@@ -162,7 +162,9 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
    「このデータをロードしますか？」→ **恢复到存档时刻的场景并继续播放**
    （证据：`test/video/evidence/load-restored-scene.png` 等 4 帧）。
    根因之一是 `savedir "savedata"` 的目录从未被创建——`setSaveDir` 现在会建。
-   剩余：`setloop` 上屏；振假名（`ruby`）未验成。
+   剩余：`setloop` 上屏；**振假名**——`(本文/ルビ)` 语法解析正确（本体与假名都
+   渲染、无崩溃），但假名画在同基线正文之后而非上方小字（探针剧本
+   `testdata/ruby-probe/00.txt`，两种屏幕位置一致复现）——绘制位置缺陷。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
 3. **RealLive**：`--no-bundle` 在旧版 `install_name_tool` 上是必需的（那是打包步骤）。
 4. **Artemis**：第二部作品的画面（Lua 宿主）、`.psb`、`movie` 语料、`scetween` 槽位。
