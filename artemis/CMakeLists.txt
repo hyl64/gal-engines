@@ -18,6 +18,44 @@ endif()
 # it depends on CoreFoundation only, and both the container tools and the effects
 # tool need it.  Keeping it out of artemis_render means the half-written renderer
 # cannot stop them from building.
+
+# --- Lua 5.1.5 (vendored): the interpreter the game's UI Lua runs on ---------
+set(LUA51_DIR third_party/lua)
+add_library(lua51 STATIC
+    ${LUA51_DIR}/lapi.c
+    ${LUA51_DIR}/lcode.c
+    ${LUA51_DIR}/ldebug.c
+    ${LUA51_DIR}/ldo.c
+    ${LUA51_DIR}/ldump.c
+    ${LUA51_DIR}/lfunc.c
+    ${LUA51_DIR}/lgc.c
+    ${LUA51_DIR}/llex.c
+    ${LUA51_DIR}/lmem.c
+    ${LUA51_DIR}/lobject.c
+    ${LUA51_DIR}/lopcodes.c
+    ${LUA51_DIR}/lparser.c
+    ${LUA51_DIR}/lstate.c
+    ${LUA51_DIR}/lstring.c
+    ${LUA51_DIR}/ltable.c
+    ${LUA51_DIR}/ltm.c
+    ${LUA51_DIR}/lundump.c
+    ${LUA51_DIR}/lvm.c
+    ${LUA51_DIR}/lzio.c
+    ${LUA51_DIR}/lauxlib.c
+    ${LUA51_DIR}/lbaselib.c
+    ${LUA51_DIR}/ldblib.c
+    ${LUA51_DIR}/liolib.c
+    ${LUA51_DIR}/lmathlib.c
+    ${LUA51_DIR}/loslib.c
+    ${LUA51_DIR}/lstrlib.c
+    ${LUA51_DIR}/ltablib.c
+    ${LUA51_DIR}/loadlib.c
+    ${LUA51_DIR}/linit.c
+)
+target_include_directories(lua51 PUBLIC ${LUA51_DIR})
+# Lua 5.1 builds as C; silence the platform warnings the modern clang raises
+target_compile_options(lua51 PRIVATE -w)
+
 add_library(artemis STATIC src/pfs.cpp src/sniff.cpp src/pngio.cpp src/lua.cpp
 	src/ipt.cpp src/luaast.cpp src/asb.cpp src/ast.cpp src/runtime.cpp src/iet.cpp)
 
@@ -90,6 +128,9 @@ target_link_libraries(iettool PRIVATE artemis)
 
 add_executable(asbtool tools/asbtool.cpp)
 target_link_libraries(asbtool PRIVATE artemis)
+
+add_executable(luahost tools/luahost.cpp)
+target_link_libraries(luahost PRIVATE lua51)
 target_compile_definitions(asbtool PRIVATE ARTEMIS_TESTDATA="${ARTEMIS_TESTDATA}")
 add_executable(asttool tools/asttool.cpp)
 target_compile_definitions(asttool PRIVATE ARTEMIS_TESTDATA="${ARTEMIS_TESTDATA}")
@@ -110,6 +151,7 @@ pkg_check_modules(SDL2 REQUIRED sdl2)
 add_executable(agame tools/agame.cpp)
 if(TARGET artemis_render)
 	target_link_libraries(agame PRIVATE artemis_render)
+	target_link_libraries(agame PRIVATE lua51)
 endif()
 target_link_libraries(agame PRIVATE artemis ${SDL2_LIBRARIES}
 	"-framework CoreText" "-framework CoreGraphics" "-framework CoreFoundation"
