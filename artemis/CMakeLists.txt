@@ -130,7 +130,7 @@ add_executable(asbtool tools/asbtool.cpp)
 target_link_libraries(asbtool PRIVATE artemis)
 
 add_executable(luahost tools/luahost.cpp)
-target_link_libraries(luahost PRIVATE lua51)
+target_link_libraries(luahost PRIVATE lua51 artemis)
 target_compile_definitions(asbtool PRIVATE ARTEMIS_TESTDATA="${ARTEMIS_TESTDATA}")
 add_executable(asttool tools/asttool.cpp)
 target_compile_definitions(asttool PRIVATE ARTEMIS_TESTDATA="${ARTEMIS_TESTDATA}")

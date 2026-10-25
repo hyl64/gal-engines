@@ -36,15 +36,177 @@ extern "C" {
 #include <dirent.h>
 #include <string>
 #include <vector>
+#include <map>
+#include <algorithm>
+
+#include "../src/pngio.h"
+
+// ---------------------------------------------------------------------------
+// the mini renderer: layers by id, composited bottom-up onto one canvas
+// ---------------------------------------------------------------------------
+struct Layer
+{
+    artemis::Image img;
+    int x = 0, y = 0;
+    int cx = 0, cy = 0, cw = 0, ch = 0;   // the clip within the source image
+    int alpha = 255;
+    bool visible = true;
+    long order = 0;                       // insertion order = z order
+};
+
+static std::map<std::string, Layer> g_layers;
+static long g_layerOrder = 0;
+static std::string g_rootDir = ".";
+
+static bool ParseInts(const std::string& text, int* out, int count)
+{
+    // "a,b,c,.." -> ints; returns false when any field is missing
+    size_t pos = 0;
+    for (int i = 0; i < count; i++){
+        if (pos >= text.size()) return false;
+        out[i] = atoi(text.c_str() + pos);
+        size_t comma = text.find(',', pos);
+        if (comma == std::string::npos) pos = text.size();
+        else pos = comma + 1;
+    }
+    return true;
+}
+
+static void TagLyc(lua_State *L, int idx)
+{
+    // e:tag{"lyc", id=..., file=...}: create a layer holding the image
+    lua_getfield(L, idx, "id");
+    const char *id = lua_tostring(L, -1);
+    lua_getfield(L, idx, "file");
+    const char *file = lua_tostring(L, -1);
+    if (!id || !file){ lua_pop(L, 2); return; }
+    Layer layer;
+    layer.order = g_layerOrder++;
+    if (!strncmp(file, ":bg/", 4)){
+        // an engine built-in: ":bg/black" is a black screen
+        layer.img.width = 1280; layer.img.height = 720;
+        layer.img.rgba.assign((size_t)layer.img.width * layer.img.height * 4, 0);
+    } else {
+        std::string path = g_rootDir + "/" + file + ".png";
+        std::string why;
+        if (!artemis::ReadPng(path, layer.img, why))
+            fprintf(stderr, "lyc: %s: %s\n", path.c_str(), why.c_str());
+    }
+    lua_pop(L, 2);
+    g_layers[id] = layer;
+}
+
+static void TagLyprop(lua_State *L, int idx)
+{
+    lua_getfield(L, idx, "id");
+    const char *id = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    if (!id) return;
+    auto it = g_layers.find(id);
+    if (it == g_layers.end()) return;
+    Layer &layer = it->second;
+
+    struct Field { const char *name; int *target; };
+    int x = layer.x, y = layer.y, left = layer.x, top = layer.y;
+    (void)left; (void)top;
+    lua_getfield(L, idx, "x");
+    if (lua_isnumber(L, -1)) layer.x = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "y");
+    if (lua_isnumber(L, -1)) layer.y = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "left");
+    if (lua_isnumber(L, -1)) layer.x = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "top");
+    if (lua_isnumber(L, -1)) layer.y = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "alpha");
+    if (lua_isnumber(L, -1)) layer.alpha = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "visible");
+    if (lua_isnumber(L, -1)) layer.visible = lua_tointeger(L, -1) != 0;
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "clip");
+    if (const char *clip = lua_tostring(L, -1)){
+        int v[4];
+        if (ParseInts(clip, v, 4)){ layer.cx = v[0]; layer.cy = v[1]; layer.cw = v[2]; layer.ch = v[3]; }
+    }
+    lua_pop(L, 1);
+}
+
+static void TagLydel(lua_State *L, int idx)
+{
+    lua_getfield(L, idx, "id");
+    const char *id = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    if (id) g_layers.erase(id);
+}
 
 static std::vector<std::string> g_called;
+
+static int debugOn()
+{
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("ONS_LUA_DEBUG") ? 1 : 0;
+    return dbg;
+}
+
+
+static std::vector<std::string> g_tags;   // the e:tag stream
+
+static void DumpLuaTable(lua_State *L, int idx)
+{
+    // the game calls e:tag{ "name", key=value, ... }: record the name and the
+    // named attributes so the render side knows what to draw
+    if (lua_type(L, idx) != LUA_TTABLE) return;
+    std::string line;
+    lua_pushnil(L);
+    int i = 0;
+    while (lua_next(L, idx) != 0){
+        // key at -2, value at -1
+        const int kt = lua_type(L, -2), vt = lua_type(L, -1);
+        if (i == 0 && kt == LUA_TNUMBER && vt == LUA_TSTRING)
+            line += lua_tostring(L, -1);          // the tag name
+        else if (kt == LUA_TSTRING){
+            const char *k = lua_tostring(L, -2);
+            std::string v;
+            if (vt == LUA_TSTRING) v = lua_tostring(L, -1);
+            else if (vt == LUA_TNUMBER) v = lua_tostring(L, -1);
+            else if (vt == LUA_TBOOLEAN) v = lua_toboolean(L, -1) ? "true" : "false";
+            if (!v.empty()) line += std::string(" ") + k + "=" + v;
+        }
+        lua_pop(L, 1);                            // pop the value, keep the key
+        i++;
+    }
+    g_tags.push_back(line);
+}
 
 static int engineStub(lua_State *L)
 {
     const char *name = lua_tostring(L, lua_upvalueindex(1));
     const char *name2 = lua_isnone(L, lua_upvalueindex(2))
                       ? NULL : lua_tostring(L, lua_upvalueindex(2));
-    g_called.push_back(name2 ? name2 : (name ? name : "?"));
+    const std::string called = name2 ? name2 : (name ? name : "?");
+    g_called.push_back(called);
+    /* e:tag{...} is the game's draw command stream: record it */
+    /* e:tag{...} is a colon call: arg 1 is the e object itself, the tag
+     * table is arg 2 */
+    if ((called == "tag" || called == "e.tag") && lua_istable(L, 2)){
+        if (debugOn()) DumpLuaTable(L, 2);
+        /* the render side: the tags that place pixels */
+        lua_getfield(L, 2, "1");                      /* e:tag{"name", ...}: [1] = name.
+                                                         getfield with the numeric key
+                                                         needs lua_pushinteger instead */
+        lua_pop(L, 1);
+        lua_pushinteger(L, 1);
+        lua_gettable(L, 2);
+        const char *tagName = lua_tostring(L, -1) ? lua_tostring(L, -1) : "";
+        lua_pop(L, 1);
+        if (!strcmp(tagName, "lyc")) TagLyc(L, 2);
+        else if (!strcmp(tagName, "lyprop")) TagLyprop(L, 2);
+        else if (!strcmp(tagName, "lydel")) TagLydel(L, 2);
+    }
     lua_pushboolean(L, 0);                    /* false: the falsy default */
     return 1;
 }
@@ -129,13 +291,6 @@ static int engineInclude(lua_State *L)
     return 1;
 }
 
-static int debugOn()
-{
-    static int dbg = -1;
-    if (dbg < 0) dbg = getenv("ONS_LUA_DEBUG") ? 1 : 0;
-    return dbg;
-}
-
 /* The __index used by the auto-vivifying state tables: create t[k] = {} for a
  * string key; anything else (nil, numbers out of range, ...) returns nil
  * instead of rawset'ing a key Lua 5.1 would segfault on. */
@@ -173,6 +328,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s <game.lua>\n", argv[0]);
         return 2;
     }
+
+    g_rootDir = getenv("ONS_LUA_ROOT") ? getenv("ONS_LUA_ROOT") : ".";
 
     lua_State *L = luaL_newstate();
     if (!L){ fprintf(stderr, "lua: state allocation failed\n"); return 1; }
@@ -359,6 +516,56 @@ int main(int argc, char **argv)
         lua_pop(L, 1);
     }
 
+    // the composite: every layer bottom-up, clipped, alpha-blended
+    if (const char *render = getenv("ONS_RENDER")){
+        const int W = 1280, H = 720;
+        std::vector<uint8_t> canvas((size_t)W * H * 4, 0);
+        for (int y = 0; y < H; y++)          // a black base, like :bg/black
+            for (int x = 0; x < W; x++){
+                uint8_t *p = &canvas[((size_t)y * W + x) * 4];
+                p[0] = p[1] = p[2] = 0; p[3] = 255;
+            }
+        std::vector<const Layer*> order;
+        for (const auto &kv : g_layers)
+            if (kv.second.visible && !kv.second.img.empty()) order.push_back(&kv.second);
+        std::sort(order.begin(), order.end(),
+                  [](const Layer *a, const Layer *b){ return a->order < b->order; });
+        for (const Layer *layer : order){
+            const int sw = layer->cw > 0 ? layer->cw : layer->img.width;
+            const int sh = layer->ch > 0 ? layer->ch : layer->img.height;
+            const int sx = layer->cx, sy = layer->cy;
+            for (int y = 0; y < sh; y++){
+                const int dy = layer->y + y;
+                if (dy < 0 || dy >= H) continue;
+                for (int x = 0; x < sw; x++){
+                    const int dx = layer->x + x;
+                    if (dx < 0 || dx >= W) continue;
+                    const int sxp = sx + x, syp = sy + y;
+                    if (sxp < 0 || syp < 0 || sxp >= layer->img.width || syp >= layer->img.height) continue;
+                    const uint8_t *sp = &layer->img.rgba[((size_t)syp * layer->img.width + sxp) * 4];
+                    uint8_t *dp = &canvas[((size_t)dy * W + dx) * 4];
+                    const int sa = (sp[3] * layer->alpha) / 255;
+                    for (int c = 0; c < 3; c++)
+                        dp[c] = (uint8_t)((sp[c] * sa + dp[c] * (255 - sa)) / 255);
+                    dp[3] = 255;
+                }
+            }
+        }
+        std::string why;
+        if (artemis::WritePng(render, W, H, canvas.data(), why))
+            printf("rendered %s (%zu layers)\n", render, order.size());
+        else
+            fprintf(stderr, "render: %s\n", why.c_str());
+    }
+
+    if (getenv("ONS_LUA_DEBUG")){
+        FILE *f = fopen(getenv("ONS_TAG_DUMP") ? getenv("ONS_TAG_DUMP") : "tags.txt", "w");
+        if (f){
+            for (const std::string &t : g_tags) fprintf(f, "%s\n", t.c_str());
+            fclose(f);
+            fprintf(stderr, "tags: %zu written\n", g_tags.size());
+        }
+    }
     printf("engine calls: %zu\n", g_called.size());
     for (size_t i = 0; i < g_called.size() && i < 24; i++)
         printf("  %s\n", g_called[i].c_str());
