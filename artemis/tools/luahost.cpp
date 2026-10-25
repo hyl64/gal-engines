@@ -131,7 +131,29 @@ int main(int argc, char **argv)
         }
         free(names);
     }
+    // The engine's `e` object: the Lua side drives the engine through e:tag,
+    // e:var, e:enqueue, ... (colon calls - each method takes self first).
+    // Registered on an auto-vivifying table whose __index hands back named
+    // method stubs, so the trace says which engine call the game attempted.
+    {
+        lua_newtable(L);
+        lua_newtable(L);                                  // its metatable
+        lua_pushstring(L, "e");
+        lua_pushcclosure(L, [](lua_State *L) -> int {     // __index(t, k)
+            lua_pushstring(L, "e");
+            lua_pushvalue(L, 2);                          // the method name
+            lua_pushcclosure(L, engineStub, 2);           // upvalues: "e", name
+            return 1;
+        }, 1);
+        lua_setfield(L, -2, "__index");
+        lua_setmetatable(L, -2);
+        lua_setglobal(L, "e");
+    }
 
+    // Stage 2: load the game's Lua files in the order system_loadinglua()
+    // prescribes.  ONS_LUA_ORDER=<file> holds the list (one "system/..." path
+    // per line); each entry is tried as <root>/<name>.lua.
+    const char *order_file = getenv("ONS_LUA_ORDER");
     int rc = 0;
     for (int i = 1; i < argc; i++){
         if (luaL_dofile(L, argv[i])){
@@ -141,6 +163,38 @@ int main(int argc, char **argv)
             printf("loaded %s\n", argv[i]);
         }
     }
+    if (order_file){
+        FILE *of = fopen(order_file, "rb");
+        if (!of){ fprintf(stderr, "luahost: no order file %s\n", order_file); return 1; }
+        char line[256];
+        int loaded = 0, failed = 0;
+        while (fgets(line, sizeof line, of)){
+            size_t n = strlen(line);
+            while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = 0;
+            if (!n) continue;
+            // the order entries are relative to the archive root, named by
+            // ONS_LUA_ROOT (the directory that holds system/)
+            std::string root = getenv("ONS_LUA_ROOT") ? getenv("ONS_LUA_ROOT") : ".";
+            std::string full = root + "/" + line + ".lua";
+            for (auto &c : full) if (c == '\\') c = '/';
+            if (luaL_dofile(L, full.c_str())){
+                failed++;
+                if (failed <= 6)
+                    fprintf(stderr, "luahost: %s failed: %s\n", full.c_str(), lua_tostring(L, -1));
+            } else loaded++;
+        }
+        fclose(of);
+        printf("order: %d loaded, %d failed\n", loaded, failed);
+    }
+
+    // The engine calls vartable_init() after loading the Lua files: it is where
+    // the game's own state tables (scr, vari, ...) get created.
+    lua_getglobal(L, "vartable_init");
+    if (lua_isfunction(L, -1)){
+        if (lua_pcall(L, 0, 0, 0))
+            fprintf(stderr, "luahost: vartable_init failed: %s\n", lua_tostring(L, -1));
+        else printf("vartable_init ran\n");
+    } else lua_pop(L, 1);
 
     // The title entry point the real UI calls at init.
     lua_getglobal(L, "title_init");
