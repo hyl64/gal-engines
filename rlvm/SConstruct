@@ -338,9 +338,21 @@ if env['PLATFORM'] == 'darwin':
   static_closure = subprocess.check_output(
     ["pkg-config", "--static", "--libs", "sndfile", "freetype2"],
     text=True).split()
+  # The closure repeats itself (both sndfile and freetype want -lm), so
+  # filter against what is already named as well as against what we append.
+  seen = set(env['LIBS'])
+  closure_libs = []
+  for tok in static_closure:
+    if not tok.startswith("-l"):
+      continue
+    name = tok[2:]
+    if name in seen:
+      continue
+    seen.add(name)
+    closure_libs.append(name)
   env.Append(
     LIBPATH = [tok[2:] for tok in static_closure if tok.startswith("-L")],
-    LIBS = [tok[2:] for tok in static_closure if tok.startswith("-l")])
+    LIBS = closure_libs)
 
 #########################################################################
 ## Building subcomponent functions

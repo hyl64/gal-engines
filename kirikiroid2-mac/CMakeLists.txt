@@ -63,10 +63,12 @@ target_link_directories(tjs2 PUBLIC ${ONIG_LIBRARY_DIRS})
 target_link_libraries(tjs2 PUBLIC ${ONIG_LIBRARIES})
 
 # ---- the engine ---------------------------------------------------------------
+file(GLOB BASE_SRC_EXTRA ${CORE}/base/OverlayArchive.cpp)
 file(GLOB UTILS_SRC ${CORE}/utils/*.cpp)
 file(GLOB UTILS_ENC ${CORE}/utils/encoding/*.c)
 
 add_library(krkr STATIC
+	${BASE_SRC_EXTRA}
 	# ---- base and storage
 	${CORE}/base/BinaryStream.cpp ${CORE}/base/CharacterSet.cpp ${CORE}/base/PluginIntf.cpp
 	${CORE}/base/StorageIntf.cpp ${CORE}/base/TARArchive.cpp ${CORE}/base/TextStream.cpp

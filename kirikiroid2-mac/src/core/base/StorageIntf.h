@@ -153,6 +153,8 @@ public:
 // must be implemented in each platform
 //---------------------------------------------------------------------------
 extern tTVPArchive * TVPOpenArchive(const ttstr & name, bool normalizeFileName);
+// register a pre-built archive (an overlay of data + patches) under `name`
+extern void TVPRegisterArchive(const ttstr & name, tTVPArchive * arc);
 	// open archive and return tTVPArchive instance.
 
 TJS_EXP_FUNC_DEF(ttstr, TVPGetTemporaryName, ());

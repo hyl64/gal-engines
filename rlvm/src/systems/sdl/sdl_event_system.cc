@@ -128,6 +128,17 @@ void PlayScriptedClicks() {
   const unsigned int now = SDL_GetTicks();
   const char* delay_text = getenv("RLVM_CLICK_DELAY");
   const unsigned int delay = delay_text ? atoi(delay_text) : 600;
+
+  // The first click can wait: games spend the opening seconds on logos and
+  // an opening movie, and a script that clicks at t=0 clicks at nothing.
+  static unsigned int started_at = 0;
+  if (started_at == 0)
+    started_at = now;
+  const char* start_text = getenv("RLVM_CLICK_START");
+  const unsigned int start = start_text ? atoi(start_text) : 0;
+  if (last_action == 0 && now - started_at < start)
+    return;
+
   if (last_action != 0 && now - last_action < delay)
     return;
   if (next >= clicks.size())

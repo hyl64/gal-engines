@@ -43,6 +43,10 @@ copy() {
   name="$(basename "$path")"
   if [ ! -f "$FW/$name" ]; then
     cp -LX "$path" "$FW/$name"
+    # Editing load commands invalidates whatever signature came along; take
+    # it off first so install_name_tool has nothing to warn about, and sign
+    # the result properly below.
+    codesign --remove-signature "$FW/$name" 2>/dev/null || true
     install_name_tool -id "@rpath/$name" "$FW/$name"
   fi
 }

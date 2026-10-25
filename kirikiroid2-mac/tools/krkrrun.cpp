@@ -45,6 +45,7 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <execinfo.h>
 #include <cstdlib>
 
@@ -253,28 +254,133 @@ int main(int argc, char** argv)
 			TJS_W("global.kirikiri2 = true;");
 		tjs->ExecScript(prelude, nullptr, nullptr, TJS_W("(prelude)"));
 
-		// A game may ship as an archive: make it the storage root and run the
-		// project's startup.tjs from inside it, the way the engine's start-up does.
+		// A game ships in one of three shapes, and all three have to run the
+		// project's startup.tjs the way the engine's own start-up does:
+		//   <folder>/startup.tjs           an unpacked project
+		//   <folder>/data.xp3 (+patch*.xp3) the released form: archives beside
+		//                                  the executable, patches layered over
+		//                                  the base in ascending order
+		//   a bare .xp3                    one archive
 		static const char kXp3Tail[] = ".xp3";
 		const std::string arg(argv[1]);
 		const bool isArchive = arg.size() > 4 && arg.compare(arg.size() - 4, 4, kXp3Tail) == 0;
-		if(isArchive)
-		{
-			char real[PATH_MAX];
-			if(realpath(arg.c_str(), real) == nullptr)
-			{
-				fprintf(stderr, "krkrrun: cannot resolve %s\n", arg.c_str());
-				return 1;
-			}
+
+		// a directory that holds data.xp3 is a released game folder
+		auto archiveRoot = [](const std::string &path) -> std::string {
 			// the trailing ">" is how a storage name says "inside this archive"
-			std::string root = std::string("file://") + real + ">";
-			TVPSetCurrentDirectory(ttstr(root.c_str()));
-			TVPAddAutoPath(ttstr(root.c_str()));
+			return std::string("file://") + path + ">";
+		};
+		auto runFromCurrentRoot = [&](void) {
 			const tjs_char bootstrap[] =
 				TJS_W("if(!Storages.isExistentStorage(\"startup.tjs\"))")
 				TJS_W(" throw new Exception(\"no startup.tjs in the archive\");")
 				TJS_W("Scripts.execStorage(\"startup.tjs\");");
 			tjs->ExecScript(bootstrap, nullptr, nullptr, TJS_W("(archive)"));
+		};
+
+		std::string gameDir;
+		{
+			struct stat st;
+			if(stat(arg.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+				gameDir = arg;
+		}
+		const std::string dataXp3 = gameDir.empty() ? std::string() : gameDir + "/data.xp3";
+		struct stat dst;
+		const bool folderRelease = !gameDir.empty() && stat(dataXp3.c_str(), &dst) == 0;
+
+		if(isArchive || folderRelease)
+		{
+			std::vector<std::string> roots; // highest priority first
+			if(folderRelease)
+			{
+				// patches win over the base archive, and a higher-numbered patch
+				// wins over a lower one, so they go into the search path first
+				for(int n = 4; n >= 2; n--)
+				{
+					const std::string p = gameDir + "/patch" + std::to_string(n) + ".xp3";
+					if(stat(p.c_str(), &dst) == 0) roots.push_back(p);
+				}
+				const std::string p1 = gameDir + "/patch.xp3";
+				if(stat(p1.c_str(), &dst) == 0) roots.push_back(p1);
+				roots.push_back(dataXp3);
+			}
+			else
+			{
+				roots.push_back(arg);
+			}
+
+			// KAG derives System.exePath from the process working directory and looks
+		// for its own patch archives there, so a released folder has to become
+		// the real working directory - not just the storage one.
+		if(folderRelease)
+		{
+			char realDir[PATH_MAX];
+			if(realpath(gameDir.c_str(), realDir) != nullptr && chdir(realDir) != 0)
+			{
+				fprintf(stderr, "krkrrun: cannot enter %s\n", realDir);
+				return 1;
+			}
+		}
+
+		std::vector<std::string> resolved;
+			for(const std::string &r : roots)
+			{
+				char real[PATH_MAX];
+				if(realpath(r.c_str(), real) == nullptr)
+				{
+					fprintf(stderr, "krkrrun: cannot resolve %s\n", r.c_str());
+					return 1;
+				}
+				resolved.push_back(archiveRoot(real));
+			}
+			// Patch archives are searched before the base one, and the game folder
+			// itself last, so a released data.xp3 + patch.xp3 pair resolves the
+			// way the engine resolves it.  The current directory is the folder,
+			// not an archive: an archive there would outrank every patch.
+			// With patches present, register a merged archive under the base
+			// archive's name: KAG resolves storage through the current directory
+			// first, so a patch mounted only through the auto path would never
+			// win.  The overlay makes the patch's files replace the base ones.
+			if(folderRelease && resolved.size() > 1)
+			{
+				std::vector<ttstr> sources; // ascending priority
+				for(auto it = resolved.rbegin(); it != resolved.rend(); ++it)
+					sources.push_back(ttstr(it->c_str()));
+				extern bool TVPCreateOverlayArchive(const ttstr &, const std::vector<ttstr> &, tTVPArchive **);
+				extern void TVPRegisterArchive(const ttstr &, tTVPArchive *);
+				tTVPArchive *overlay = nullptr;
+				// the archive cache is keyed by the archive path itself, without
+				// the '>' that marks "inside this archive"
+				const ttstr baseWithDelimiter(resolved.back().c_str());
+				const ttstr baseName = baseWithDelimiter.SubString(0,
+					baseWithDelimiter.GetLen() - 1);
+				// the names passed to the overlay are the archive paths, without
+				// the trailing '>' the storage names carry
+				for(ttstr &s : sources)
+				{
+					ttstr trimmed(s.c_str(), s.GetLen() - 1);
+					s = trimmed;
+				}
+				if(TVPCreateOverlayArchive(baseName, sources, &overlay))
+				{
+					TVPRegisterArchive(baseName, overlay);
+					overlay->Release();
+					if(getenv("KRKR_DEBUG_ARCHIVE"))
+					{
+						fprintf(stderr, "[archive] overlay of %d archive(s) registered\n",
+							(int)sources.size());
+						fflush(stderr);
+					}
+				}
+			}
+			// the current directory is the base archive: that is the root KAG's own
+			// path resolution expects, and it is where the engine's start-up looks
+			TVPSetCurrentDirectory(ttstr(resolved.back().c_str()));
+			for(const std::string &r : resolved)
+				TVPAddAutoPath(ttstr(r.c_str()));
+			if(folderRelease)
+				TVPAddAutoPath(ttstr((std::string("file://") + gameDir + "/").c_str()));
+			runFromCurrentRoot();
 		}
 		else
 		{

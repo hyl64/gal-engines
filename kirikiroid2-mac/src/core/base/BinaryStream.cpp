@@ -10,6 +10,8 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
+#include <vector>
+
 #include <zlib.h>
 #include "TextStream.h"
 #include "MsgIntf.h"
@@ -68,7 +70,27 @@ tTJSBinaryStream * TVPCreateBinaryStreamForWrite(const ttstr & name,
 		}
 		buf[i] = 0;
 		tjs_uint64 ofs = ttstr(buf).AsInteger();
-		stream = TVPCreateStream(name, TJS_BS_UPDATE);
+		// An offset write ("o<ofs>", how KAG stores a bookmark behind its
+		// thumbnail) is an in-place update: keep what is already there, then
+		// continue at the offset.  Opening the storage in update mode is not
+		// reliable here - the write then failed with "Write error" and every
+		// KAG save died on it - so the existing bytes are carried over through
+		// a plain write stream instead.
+		std::vector<tjs_uint8> existing;
+		if(TVPIsExistentStorage(name))
+		{
+			tTJSBinaryStream *in = TVPCreateStream(name, TJS_BS_READ);
+			if(in)
+			{
+				const tjs_uint64 size = in->GetSize();
+				existing.resize((size_t)size);
+				if(size) in->Read(&existing[0], (tjs_uint)size);
+				delete in;
+			}
+		}
+		stream = TVPCreateStream(name, TJS_BS_WRITE);
+		if(!existing.empty())
+			stream->Write(&existing[0], (tjs_uint)existing.size());
 		stream->SetPosition(ofs);
 	} else {
 		stream = TVPCreateStream(name, TJS_BS_WRITE);

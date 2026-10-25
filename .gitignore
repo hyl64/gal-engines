@@ -1,48 +1,25 @@
+# Root-level ignores only.  Each vendored engine keeps its own .gitignore, and
+# git honours it inside that directory - so an upstream file that happens to look
+# like an artefact here (a placeholder .g00, a tracked stdout.txt) stays tracked.
+
+# game data never belongs in this repository (see docs/DATA.md)
+testdata/
+
 # build output
-build/
-build-*/
-obj/
-*.o
-*.a
-*.dylib
-*.dSYM/
+*/build/
+*/build-*/
+*/obj/
 .sconsign.dblite
 .sconf_temp/
 config.log
 __pycache__/
 *.pyc
 
-# game data never belongs in the repository (see docs/DATA.md)
-testdata/
-*.xp3
-*.pfs
-*.pfs.*
-*.arc
-*.g00
-*.nwa
-*.nwk
-*.koe
-*.ovk
-*.ksd
-seen.txt
-SEEN.TXT
-nscript.dat
-arc.nsa
-datasu.ksd
-datasc.ksd
-sav/
-
 # produced by running the engines
 *.dmg
 frames/
 verify-out/
 shots/
-save*.dat
-envdata
-stdout.txt
-stderr.txt
 
 # editor / OS
 .DS_Store
-*.swp
-.vscode/

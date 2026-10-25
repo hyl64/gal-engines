@@ -28,6 +28,8 @@ Verified on an M-series Mac with **CLANNAD Full Voice** (Chinese translation,
 | Audio | BGM plays |
 | Idle cost | 0.4 % CPU, 8.7 MB RSS |
 | App bundle | self-contained; runs where Homebrew was never installed |
+| Robustness | all 231 scenarios started; no crashes |
+| Play | title, new game, narration, sprites, system menu, save, load, preferences |
 
 ![Dialogue](docs/screenshot-dialogue.png)
 ![System menu](docs/screenshot-menu.png)
@@ -97,6 +99,20 @@ with its reasoning; the substance:
   plays that game.
 - The last game is remembered, so a second launch needs no dialog.
 - Folders can be dropped on the icon.
+
+## Verification
+
+Three checks, all of them run from a shell:
+
+    $ ./build/rlvm_unittests                     # 260 unit tests
+    $ grep -- --all ... build/seen-dump          # parse every scenario
+    $ scripts/smoke-scenarios.sh build/rlvm.app/Contents/MacOS/rlvm <game-dir>
+
+The third launches the engine once per scenario and reports the ones that
+fail to come up. Against CLANNAD Full Voice, 218 of 231 keep running and the
+other 13 exit cleanly on their own -- they are farcall sub-scenes that expect
+a caller, and starting one standalone leaves an empty call stack. No crashes
+in any of the 231.
 
 ## Debugging aids
 
@@ -310,7 +326,21 @@ during its scans and the engine can stall on the very first `open()`.
 `/Users/Shared`, `/Applications`, or any local path is fine. See
 `PERF.md`.
 
-### Debugging aids
+### Verification
+
+Three checks, all of them run from a shell:
+
+    $ ./build/rlvm_unittests                     # 260 unit tests
+    $ grep -- --all ... build/seen-dump          # parse every scenario
+    $ scripts/smoke-scenarios.sh build/rlvm.app/Contents/MacOS/rlvm <game-dir>
+
+The third launches the engine once per scenario and reports the ones that
+fail to come up. Against CLANNAD Full Voice, 218 of 231 keep running and the
+other 13 exit cleanly on their own -- they are farcall sub-scenes that expect
+a caller, and starting one standalone leaves an empty call stack. No crashes
+in any of the 231.
+
+## Debugging aids
 
 Two environment variables make the engine observable without a debugger:
 

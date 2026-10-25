@@ -1,0 +1,36 @@
+// save-roundtrip.tjs - the bookmark save path a KAG3 game uses.
+//
+// KAG writes a bookmark as: draw the thumbnail (saveLayerImage), then
+// Dictionary.saveStruct at an offset ("o<size>") behind it.  The offset write
+// used to die with "Write error" on this back end, so every game's save was
+// broken; this script exercises both steps and the read-back.
+
+function probe()
+{
+	var base = System.dataPath;
+	var path = base + "save_roundtrip_test.ksd";
+	var thumb = base + "save_roundtrip_test.bmp";
+
+	var w = new Window();
+	w.setInnerSize(64, 48);
+	var l = new Layer(w, null);
+	l.setSize(64, 48);
+	l.fillRect(0, 0, 64, 48, 0xff336699);
+
+	// 1. thumbnail, as saveBookMarkToFile does
+	l.saveLayerImage(thumb, "bmp32");
+	System.inform("thumbnail: written");
+
+	// 2. structured data at an offset behind the thumbnail
+	var data = %[ chapter : 1, section : 2, pos : 3, name : "save test" ];
+	(Dictionary.saveStruct incontextof data)(path, "o4096");
+	System.inform("saveStruct at offset: ok");
+
+	// 3. a second record further on, then read the first back the way KAG does
+	(Dictionary.saveStruct incontextof data)(path, "o8192");
+	var back = Scripts.evalStorage(path, "o4096");
+	System.inform("read back: chapter=" + back.chapter + " pos=" + back.pos
+		+ " name=" + back.name);
+	System.inform("SAVE-ROUNDTRIP-OK");
+}
+probe();

@@ -1,0 +1,5 @@
+ONScripter Yuri 0.7.7, (Jh0.8.0,Ons20181218,NSC2.96)
+Initialize GameController
+Display: 640 x 480 (32 bpp)
+Audio: 44100 Hz 16 bit stereo
+cannot open system.lua

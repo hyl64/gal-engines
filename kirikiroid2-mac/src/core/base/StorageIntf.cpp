@@ -781,9 +781,25 @@ public:
 		return arc;
 	}
 
+	// put an already-built archive (an overlay, say) in front of the loader, so
+	// every storage name that goes through this archive sees the merged view
+	void Register(const ttstr &name, tTVPArchive *arc)
+	{
+		if(arc == nullptr) return;
+		const ttstr normalized = TVPNormalizeStorageName(name);
+		tTJSCSH csh(CS);
+		tjs_uint32 hash = tTJSHashCache<ttstr, tHolder>::MakeHash(normalized);
+		tHolder holder(arc);
+		ArchiveCache.AddWithHash(normalized, hash, holder);
+	}
+
 private:
 
 } TVPArchiveCache;
+void TVPRegisterArchive(const ttstr &name, tTVPArchive *arc)
+{
+	TVPArchiveCache.Register(name, arc);
+}
 static void TVPClearArchiveCache() { TVPArchiveCache.Clear(); }
 static tTVPAtExit TVPClearArchiveCacheAtExit
 	(TVP_ATEXIT_PRI_SHUTDOWN, TVPClearArchiveCache);

@@ -10,6 +10,8 @@
 //---------------------------------------------------------------------------
 #include "tjsCommHead.h"
 
+#include <vector>
+
 #include <zlib.h>
 #include "TextStream.h"
 #include "MsgIntf.h"
@@ -527,16 +529,26 @@ public:
 			}
 			buf[i] = 0;
 			tjs_uint64 ofs = ttstr(buf).AsInteger();
-			/* Update mode needs the file to be there; a save that writes its first
-			 * bytes at an offset is also the first write to that file. */
-			try
+			/* An offset write is an in-place update: keep the bytes already in
+			 * the file, then continue at the offset.  The storage's own update
+			 * mode is not writable on this back end - every KAG bookmark save
+			 * died with "Write error" on it - so the existing prefix is carried
+			 * through a plain write stream instead. */
+			std::vector<tjs_uint8> existing;
+			if(TVPIsExistentStorage(name))
 			{
-				Stream = TVPCreateStream(name, TJS_BS_UPDATE);
+				tTJSBinaryStream *in = TVPCreateStream(name, TJS_BS_READ);
+				if(in)
+				{
+					const tjs_uint64 size = in->GetSize();
+					existing.resize((size_t)size);
+					if(size) in->Read(&existing[0], (tjs_uint)size);
+					delete in;
+				}
 			}
-			catch(...)
-			{
-				Stream = TVPCreateStream(name, TJS_BS_WRITE);
-			}
+			Stream = TVPCreateStream(name, TJS_BS_WRITE);
+			if(!existing.empty())
+				Stream->WriteBuffer(&existing[0], (tjs_uint)existing.size());
 			Stream->SetPosition(ofs);
 		}
 		else

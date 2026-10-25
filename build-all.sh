@@ -132,8 +132,20 @@ else
 	( cd "$DATA/lifegame" && exec env SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
 		"$ROOT/OnscripterYuri/build/onsyuri" --root . --enc:sjis >/tmp/gal_ns.log 2>&1 ) &
 	pid=$!
-	sleep 3
-	if kill -0 "$pid" 2>/dev/null; then pass nscripter "官方 demo 3 秒后仍在主循环"; else fail nscripter "提前退出，见 /tmp/gal_ns.log"; fi
+	# Poll rather than sleep once: a cold start can take a while, and a leftover
+	# engine from an earlier run can make this one exit early.  Either way the
+	# verdict has to be about this process, not about the machine's mood.
+	alive=0
+	for _ in 1 2 3 4 5 6; do
+		sleep 1
+		kill -0 "$pid" 2>/dev/null || break
+		alive=$((alive + 1))
+	done
+	if [ "$alive" -ge 3 ]; then
+		pass nscripter "官方 demo 在 ${alive} 秒内保持运行"
+	else
+		fail nscripter "提前退出（活了 ${alive} 秒）：$(tail -1 /tmp/gal_ns.log 2>/dev/null)"
+	fi
 	kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 fi
 

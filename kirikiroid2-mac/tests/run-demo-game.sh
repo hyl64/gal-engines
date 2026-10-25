@@ -118,5 +118,51 @@ if strings "$TMP/link.log" | grep -aq "Script exception raised\|already invalida
 	fail=1
 fi
 
+# 4. the released form: a folder holding data.xp3, which is how a game ships
+mkdir -p "$TMP/release"
+python3 "$ROOT/tests/pack-game-xp3.py" "$GAME" "$TMP/release/data.xp3" >/dev/null 2>&1
+(
+	cd "$TMP"
+	KRKR_LOOP_SECONDS=8 SDL_VIDEODRIVER=dummy \
+		"$KRKRRUN" "$TMP/release" --screenshot "$TMP/release.bmp" >"$TMP/release.log" 2>&1
+) || { note "FAILED: the released folder form exited non-zero"; fail=1; }
+strings "$TMP/release.log" | grep -aq "Scenario loaded : first.ks" \
+	|| { note "MISSING: data.xp3 in a folder did not boot"; fail=1; }
+strings "$TMP/release.log" | grep -aq "wrote .*bmp" \
+	|| { note "MISSING: the released form produced no frame"; fail=1; }
+note "released form: data.xp3 mounted from the game folder"
+
+# 5. patch layering: a patch.xp3 must win over the base archive, which is how
+#    a released game ships a fix
+mkdir -p "$TMP/relpatch/base" "$TMP/relpatch/patchsrc/scenario"
+python3 "$ROOT/tests/pack-game-xp3.py" "$GAME" "$TMP/relpatch/base/data.xp3" >/dev/null 2>&1 \
+	|| { note "FAILED: could not pack the base archive"; fail=1; }
+cp "$GAME/scenario/first.ks" "$TMP/relpatch/patchsrc/scenario/first.ks" \
+	|| { note "FAILED: could not stage the patched scenario"; fail=1; }
+python3 - "$TMP/relpatch/patchsrc/scenario/first.ks" <<'PY'
+import sys
+p = sys.argv[1]
+t = open(p, encoding='utf-8', errors='surrogateescape').read()
+t2 = t.replace('\u5409\u91cc\u5409\u91cc\u3068KAG\u306e\u7d39\u4ecb', 'PATCHED-BY-TEST', 1)
+if t2 == t:
+    sys.stderr.write('patch marker not found in scenario\n')
+    sys.exit(1)
+open(p, 'w', encoding='utf-8', errors='surrogateescape').write(t2)
+PY
+[ $? -eq 0 ] || { note "FAILED: could not patch the scenario text"; fail=1; }
+python3 "$ROOT/tests/pack-game-xp3.py" "$TMP/relpatch/patchsrc" "$TMP/relpatch/base/patch.xp3" >/dev/null 2>&1 \
+	|| { note "FAILED: could not pack the patch archive"; fail=1; }
+(
+	cd "$TMP"
+	KRKR_LOOP_SECONDS=8 SDL_VIDEODRIVER=dummy \
+		"$KRKRRUN" "$TMP/relpatch/base" --screenshot "$TMP/patched.bmp" >"$TMP/patched.log" 2>&1
+) ; patch_status=$?
+if strings "$TMP/patched.log" 2>/dev/null | grep -aq "PATCHED-BY-TEST"; then
+	note "patch layering: patch.xp3 overrides data.xp3"
+else
+	note "FAILED: patch.xp3 did not override the base archive (exit $patch_status)"
+	fail=1
+fi
+
 [ "$fail" = "0" ] && echo "PASS: the second real game boots, renders and survives the click path" \
 	|| { echo "FAIL"; exit 1; }
