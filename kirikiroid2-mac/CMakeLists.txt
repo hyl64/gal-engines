@@ -117,7 +117,7 @@ target_include_directories(krkr PUBLIC ${KRKR_INCLUDES})
 target_link_directories(krkr PUBLIC ${PNG_LIBRARY_DIRS} ${FREETYPE_LIBRARY_DIRS}
 	${LZ4_LIBRARY_DIRS} ${SDL2_LIBRARY_DIRS} /opt/homebrew/lib ${OPENCV4}/lib)
 target_link_libraries(krkr PUBLIC tjs2 z archive ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES}
-	${LZ4_LIBRARIES} ${SDL2_LIBRARIES} swscale /opt/homebrew/lib/libSDL2_mixer.dylib /opt/homebrew/opt/jpeg-turbo/lib/libturbojpeg.dylib /opt/homebrew/opt/jpeg-turbo/lib/libjpeg.dylib
+	${LZ4_LIBRARIES} ${SDL2_LIBRARIES} swscale avformat avcodec avutil swresample /opt/homebrew/lib/libSDL2_mixer.dylib /opt/homebrew/opt/jpeg-turbo/lib/libturbojpeg.dylib /opt/homebrew/opt/jpeg-turbo/lib/libjpeg.dylib
 	${OPENCV4}/lib/libopencv_core.dylib ${OPENCV4}/lib/libopencv_imgproc.dylib)
 
 # ---- the tools, each documented in tools/ ------------------------------------

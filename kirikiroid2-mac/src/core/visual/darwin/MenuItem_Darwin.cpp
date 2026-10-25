@@ -174,7 +174,16 @@ tTJSNC_MenuItem_Darwin::tTJSNC_MenuItem_Darwin()
 			return TJS_S_OK;
 		}
 		TJS_END_NATIVE_PROP_GETTER
-		TJS_DENY_NATIVE_PROP_SETTER
+		TJS_BEGIN_NATIVE_PROP_SETTER
+		{
+			// KAG rewrites a menu item's caption every time it rebuilds the
+			// right-click menu, so this has to be writable
+			TJS_GET_NATIVE_INSTANCE(_this, MenuItemInstance);
+			tTJSNarrowStringHolder narrow(param->GetString());
+			_this->Data->caption = (const char*)narrow;
+			return TJS_S_OK;
+		}
+		TJS_END_NATIVE_PROP_SETTER
 	}
 	TJS_END_NATIVE_PROP_DECL(caption)
 

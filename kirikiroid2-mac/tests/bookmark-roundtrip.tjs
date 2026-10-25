@@ -1,0 +1,32 @@
+// bookmark-roundtrip.tjs - save and load a bookmark through the game itself.
+//
+// KAG's own saveBookMark / loadBookMark is what the save screen calls: it
+// draws a thumbnail, writes the structured bookmark behind it, and rebuilds
+// the right-click menu on the way (which is how the MenuItem caption setter
+// gets exercised).  Both directions must succeed on the real project.
+Scripts.execStorage("startup.tjs");
+
+function probe()
+{
+	try
+	{
+		kag.saveBookMark(0);
+		System.inform("CHECK saveBookMark ok");
+	}
+	catch(e)
+	{
+		System.inform("FAILED saveBookMark: " + e.message);
+		return;
+	}
+	try
+	{
+		var ok = kag.loadBookMark(0);
+		System.inform("CHECK loadBookMark -> " + ok);
+	}
+	catch(e)
+	{
+		System.inform("FAILED loadBookMark: " + e.message);
+	}
+	System.inform("BOOKMARK-ROUNDTRIP-DONE");
+}
+probe();

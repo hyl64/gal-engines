@@ -1,0 +1,31 @@
+// video-probe.tjs - decode a movie through VideoOverlay and paint it.
+//
+// The window and the layer are globals because a playing overlay draws on the
+// window's primary layer: if the script drops its only reference, the layer
+// tree goes away and there is nothing to paint on.
+var win = void;
+var base = void;
+var movie = void;
+
+function probe()
+{
+	win = new Window();
+	win.setInnerSize(320, 240);
+	base = new Layer(win, null);
+	base.setSize(320, 240);
+	base.visible = true;
+	base.fillRect(0, 0, 320, 240, 0xff101010);
+	win.update();
+
+	movie = new VideoOverlay(win);
+	movie.left = 0;
+	movie.top = 0;
+	movie.width = 160;
+	movie.height = 120;
+	movie.open("twocolor.mp4");
+	System.inform("opened: duration=" + movie.totalTime
+		+ " position=" + movie.position);
+	movie.play();
+	System.inform("VIDEO-PROBE-STARTED");
+}
+probe();

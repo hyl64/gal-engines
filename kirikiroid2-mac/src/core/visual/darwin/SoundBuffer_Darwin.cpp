@@ -84,6 +84,38 @@ namespace
 		bool MusicPlaying = false;     // music mode: this buffer owns the music stream
 		double TotalTime = 0.0;
 
+		// where the sound is, for the position property
+		Uint64 PlayStart = 0;
+		Uint64 PausedTotal = 0;
+		Uint64 PauseStart = 0;
+
+		double CurrentPosition()
+		{
+			if(kind == Kind::Music && Music != nullptr)
+				return Mix_GetMusicPosition(Music);
+			if(kind != Kind::Chunk || Channel < 0) return 0.0;
+			Uint64 played = SDL_GetTicks64() - PlayStart - PausedTotal;
+			return (double)played / 1000.0;
+		}
+
+		void NoteStarted()
+		{
+			PlayStart = SDL_GetTicks64();
+			PausedTotal = 0;
+			PauseStart = 0;
+		}
+
+		void NotePaused(bool paused)
+		{
+			const Uint64 now = SDL_GetTicks64();
+			if(paused && PauseStart == 0) PauseStart = now;
+			else if(!paused && PauseStart != 0)
+			{
+				PausedTotal += now - PauseStart;
+				PauseStart = 0;
+			}
+		}
+
 		// fade state, stepped by the host's frame loop on the main thread
 		bool Fading = false;
 		bool FadeDelaying = false;
@@ -114,6 +146,7 @@ namespace
 				Mix_HaltMusic();
 				MusicPlaying = false;
 			}
+			PlayStart = PausedTotal = PauseStart = 0;
 			if(Chunk != nullptr) { Mix_FreeChunk(Chunk); Chunk = nullptr; }
 			if(Music != nullptr) { Mix_FreeMusic(Music); Music = nullptr; }
 			Bytes.clear();
@@ -286,6 +319,7 @@ tTJSNC_WaveSoundBuffer_Darwin::tTJSNC_WaveSoundBuffer_Darwin()
 				Mix_HaltChannel(_this->Channel);
 			const int loops = _this->Looping ? -1 : 0;
 			_this->Channel = Mix_PlayChannel(-1, _this->Chunk, loops);
+			_this->NoteStarted();
 		}
 		else if(_this->kind == WaveInstance::Kind::Music)
 		{
@@ -293,6 +327,7 @@ tTJSNC_WaveSoundBuffer_Darwin::tTJSNC_WaveSoundBuffer_Darwin()
 			Mix_HaltMusic(); // the music stream is single; a new song takes it
 			const int loops = _this->Looping ? -1 : 0;
 			_this->MusicPlaying = Mix_PlayMusic(_this->Music, loops) == 0;
+			if(_this->MusicPlaying) _this->NoteStarted();
 			_this->ApplyVolume();
 		})
 	WAVE_SIMPLE(/*func. name*/ stop,
@@ -462,11 +497,13 @@ tTJSNC_WaveSoundBuffer_Darwin::tTJSNC_WaveSoundBuffer_Darwin()
 			{
 				if(*param) { if(_this->Channel >= 0) Mix_Pause(_this->Channel); }
 				else { if(_this->Channel >= 0) Mix_Resume(_this->Channel); }
+				_this->NotePaused((tjs_int)*param != 0);
 			}
 			else if(_this->kind == WaveInstance::Kind::Music && _this->MusicPlaying)
 			{
 				if(*param) Mix_PauseMusic();
 				else Mix_ResumeMusic();
+				_this->NotePaused((tjs_int)*param != 0);
 			}
 			return TJS_S_OK;
 		}
@@ -493,14 +530,15 @@ tTJSNC_WaveSoundBuffer_Darwin::tTJSNC_WaveSoundBuffer_Darwin()
 	}
 	TJS_END_NATIVE_PROP_DECL(looping)
 
-	// position is not tracked by SDL_mixer chunks; the music stream could ask
-	// the decoder, but nothing in the framework reads it yet
+	// Position in seconds.  SDL_mixer reports it for a music stream; a chunk has
+	// no such query, so the elapsed time since it started is used, which is what
+	// a script showing a seek bar needs and is exact enough at that granularity.
 	TJS_BEGIN_NATIVE_PROP_DECL(position)
 	{
 		TJS_BEGIN_NATIVE_PROP_GETTER
 		{
 			TJS_GET_NATIVE_INSTANCE(_this, WaveInstance);
-			*result = (tjs_real)0.0;
+			*result = (tjs_real)_this->CurrentPosition();
 			return TJS_S_OK;
 		}
 		TJS_END_NATIVE_PROP_GETTER

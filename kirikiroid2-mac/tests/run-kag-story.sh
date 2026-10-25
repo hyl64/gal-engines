@@ -61,7 +61,21 @@ run_one() {
 echo "== KiriKiri long-story acceptance ($KRKRRUN)"
 echo "1. from the game folder"
 run_one folder "$GAME/startup.tjs" "$TMP/folder.log" || FAIL=1
-echo "2. from a packed data.xp3"
+echo "2. the story's text links (the settings screen behind one)"
+(
+	cd "$GAME"
+	KRKR_LOOP_SECONDS=22 SDL_VIDEODRIVER=dummy \
+		KRKR_AUTO_CLICK="1131,446,3000" KRKR_AUTO_CLICK2="1080,690,9000" \
+		"$KRKRRUN" startup.tjs >"$TMP/setting.log" 2>&1
+) || { echo "  FAILED: the link run exited non-zero"; FAIL=1; }
+if strings "$TMP/setting.log" | grep -aq "setting.ks : jumped to : \*setting"; then
+	echo "  ok: a click on the story's 'setting' link opened its screen"
+else
+	echo "  FAILED: the story's link did not open the settings screen"
+	FAIL=1
+fi
+
+echo "3. from a packed data.xp3"
 python3 "$ROOT/tests/pack-game-xp3.py" "$GAME" "$TMP/data.xp3" >/dev/null \
 	|| { echo "  FAILED: packing the archive"; exit 1; }
 run_one archive "$TMP/data.xp3" "$TMP/archive.log" || FAIL=1

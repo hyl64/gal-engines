@@ -47,6 +47,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <execinfo.h>
+#include <signal.h>
 #include <cstdlib>
 
 // who called exit(): the engine's terminate path leads somewhere we cannot see
@@ -160,9 +161,27 @@ static bool SaveComposed(const char* path)
 	return ok;
 }
 
+static void OnFatalSignal(int sig)
+{
+	void* frames[40];
+	const int n = backtrace(frames, 40);
+	fprintf(stderr, "\n[fatal] signal %d, %d frame(s)\n", sig, n);
+	backtrace_symbols_fd(frames, n, 2);
+	fflush(stderr);
+	_exit(128 + sig);
+}
+
+static unsigned long long gFramesRendered = 0;
+
 int main(int argc, char** argv)
 {
 	atexit(OnExitTrace);
+	if(getenv("KRKR_CRASH_TRACE") != nullptr)
+	{
+		signal(SIGSEGV, OnFatalSignal);
+		signal(SIGBUS, OnFatalSignal);
+		signal(SIGABRT, OnFatalSignal);
+	}
 	if(argc < 2)
 	{
 		fprintf(stderr, "usage: %s <script.tjs>\n", argv[0]);
@@ -396,6 +415,7 @@ int main(int argc, char** argv)
 			extern iTVPDrawDevice* TVPGetLastDrawDeviceDarwin();
 			const double limit = atof(seconds) * 1000.0;
 			const Uint64 start = SDL_GetTicks64();
+			Uint64 frameStart = start;
 			while((double)(SDL_GetTicks64() - start) < limit)
 			{
 				TVPDarwinTickTimers();
@@ -403,13 +423,20 @@ int main(int argc, char** argv)
 				// are posted from the same thread everything else runs on
 				extern void TVPDarwinTickSoundFades();
 				TVPDarwinTickSoundFades();
+
 				// the framework's own events (AsyncTrigger and friends) are queued
 				// and dispatched here
 				extern void TVPInvokeEvents();
 				TVPInvokeEvents();
 				if(iTVPDrawDevice* device = TVPGetLastDrawDeviceDarwin())
 				{
+					// compose the layer tree first, then let a movie overlay draw
+					// over the composed frame: it paints the primary layer, which
+					// Update() would otherwise overwrite
 					device->Update();
+					gFramesRendered++;
+					extern void TVPDarwinTickVideo();
+					TVPDarwinTickVideo();
 					device->Show();
 				}
 				SDL_Event e;
@@ -418,6 +445,13 @@ int main(int argc, char** argv)
 					if(e.type == SDL_QUIT)
 						break;
 				}
+
+				// Sleep only the time left in this frame: a flat SDL_Delay(16)
+				// on top of the work pushed the loop under 60 fps.
+				const Uint64 frameEnd = frameStart + 16;
+				const Uint64 now = SDL_GetTicks64();
+				if(now < frameEnd) SDL_Delay((Uint32)(frameEnd - now));
+				frameStart = frameEnd > now ? frameEnd : now;
 
 				/* KRKR_AUTO_CLICK="x,y,from_ms": click a few times from that
 				 * moment on.  A headless host has no mouse, and a title screen sits
@@ -464,6 +498,34 @@ int main(int argc, char** argv)
 						clicks++;
 					}
 				}
+				/* KRKR_AUTO_RCLICK="x,y,from_ms": the right button, which KAG uses
+				 * for its menu (save, load, settings, history). */
+				if(const char* rclick = getenv("KRKR_AUTO_RCLICK"))
+				{
+					static int rclicks;
+					const long fromr = atol(strchr(rclick, ',') ? strrchr(rclick, ',') + 1 : "0");
+					const long long nowr = (long long)(SDL_GetTicks64() - start);
+					if(rclicks < 10 && nowr >= fromr + (long long)rclicks * 2000)
+					{
+						int x = 0, y = 0;
+						sscanf(rclick, "%d,%d", &x, &y);
+						if(getenv("KRKR_DEBUG_INPUT"))
+						{
+							fprintf(stderr, "[input] rclick %d at %lld ms\n", rclicks + 1, nowr);
+							fflush(stderr);
+						}
+						if(iTVPDrawDevice* device = TVPGetLastDrawDeviceDarwin())
+						{
+							device->OnMouseMove(x + 1, y + 1, 0);
+							device->OnMouseMove(x, y, 0);
+							device->OnMouseDown(x, y, mbRight, 0);
+							device->OnMouseUp(x, y, mbRight, 0);
+							device->OnClick(x, y);
+						}
+						rclicks++;
+					}
+				}
+
 				/* KRKR_AUTO_CLICK2 works the same way with its own point, so a run can
 				 * press the title's button and then walk through the story. */
 				if(const char* click2 = getenv("KRKR_AUTO_CLICK2"))
@@ -508,10 +570,17 @@ int main(int argc, char** argv)
 						clicks2++;
 					}
 				}
-				SDL_Delay(16);
 			}
 		}
-		// an optional frame, taken after the script has run
+		if(getenv("KRKR_STATS") != nullptr)
+	{
+		const double secs = atof(getenv("KRKR_LOOP_SECONDS") ? getenv("KRKR_LOOP_SECONDS") : "0");
+		fprintf(stderr, "[stats] frames=%llu seconds=%.2f fps=%.1f\n",
+			gFramesRendered, secs, secs > 0.0 ? (double)gFramesRendered / secs : 0.0);
+		fflush(stderr);
+	}
+
+	// an optional frame, taken after the script has run
 		if(argc >= 4 && strcmp(argv[2], "--screenshot") == 0)
 		{
 			fflush(stdout);

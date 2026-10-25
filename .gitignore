@@ -1,25 +1,8 @@
-# Root-level ignores only.  Each vendored engine keeps its own .gitignore, and
-# git honours it inside that directory - so an upstream file that happens to look
-# like an artefact here (a placeholder .g00, a tracked stdout.txt) stays tracked.
-
-# game data never belongs in this repository (see docs/DATA.md)
 testdata/
-
-# build output
 */build/
-*/build-*/
-*/obj/
-.sconsign.dblite
-.sconf_temp/
-config.log
-__pycache__/
-*.pyc
-
-# produced by running the engines
-*.dmg
-frames/
-verify-out/
-shots/
-
-# editor / OS
-.DS_Store
+OnscripterYuri/
+/artemis/
+gal/
+kirikiroid2-mac/
+openbgi/
+rlvm/

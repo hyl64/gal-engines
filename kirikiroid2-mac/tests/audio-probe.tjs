@@ -1,0 +1,85 @@
+// audio-probe.tjs - the wave sound buffer contract KAG relies on.
+//
+// Reports one line per check so the shell wrapper can assert on them:
+// play/pause/resume/stop, position advancing, the natural end that [ws] waits
+// for, a sound effect and a BGM playing at once, per-buffer volume, and a fade
+// that completes.
+var win = void;
+var posTimer = void;
+var bgm = void;
+var se = void;
+var fadeBuf = void;
+
+class FadeProbe extends WaveSoundBuffer
+{
+	function onFadeCompleted()
+	{
+		System.inform("CHECK fade-completed status=" + status);
+	}
+}
+
+function probe()
+{
+	win = new Window();
+	win.setInnerSize(64, 48);
+
+	// --- play / pause / resume / stop
+	se = new WaveSoundBuffer(win);
+	se.open("boom.wav");
+	se.play();
+	System.inform("CHECK after-play status=" + se.status);
+	se.paused = true;
+	System.inform("CHECK after-pause status=" + se.status);
+	se.paused = false;
+	System.inform("CHECK after-resume status=" + se.status);
+	se.stop();
+	System.inform("CHECK after-stop status=" + se.status);
+
+	// --- a sound effect and a BGM at the same time
+	bgm = new WaveSoundBuffer(win);
+	bgm.open("song.ogg");
+	bgm.looping = true;
+	bgm.volume = -600;
+	bgm.play();
+	se.volume = -1200;
+	se.play();
+	System.inform("CHECK simultaneous bgm=" + bgm.status + " se=" + se.status);
+	System.inform("CHECK volumes se=" + se.volume + " bgm=" + bgm.volume);
+
+	// --- close while playing, then reuse the buffer
+	se.close();
+	System.inform("CHECK after-close status=" + se.status);
+	se.open("boom.wav");
+	se.play();
+	System.inform("CHECK reopened status=" + se.status);
+
+	// --- invalidating a playing buffer must not take the process with it
+	var dying = new WaveSoundBuffer(win);
+	dying.open("boom.wav");
+	dying.play();
+	invalidate dying;
+	System.inform("CHECK invalidate-survived");
+
+	// --- a fade that must complete
+	fadeBuf = new FadeProbe(win);
+	fadeBuf.open("boom.wav");
+	fadeBuf.play();
+	fadeBuf.fade(0, 200);
+	System.inform("CHECK fade-started");
+
+	// --- position advances (sampled by a timer, which must stay referenced)
+	posTimer = new Timer(reportPosition, "");
+	posTimer.interval = 700;
+	posTimer.enabled = true;
+
+	System.inform("AUDIO-PROBE-DONE");
+}
+
+function reportPosition()
+{
+	if(bgm === void) return;
+	System.inform("CHECK position=" + bgm.position);
+	// stop the BGM once we have a reading so the run can end
+	if(bgm.status == 1) bgm.stop();
+}
+probe();

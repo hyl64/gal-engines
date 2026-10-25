@@ -1,0 +1,17 @@
+var win = void; var base = void; var movie = void;
+function probe()
+{
+	win = new Window();
+	win.setInnerSize(320, 240);
+	base = new Layer(win, null);
+	base.setSize(320,240); base.visible = true;
+	base.fillRect(0,0,320,240,0xff101010);
+	win.update();
+	movie = new VideoOverlay(win);
+	movie.left=0; movie.top=0; movie.width=160; movie.height=120;
+	movie.open("av.mp4");
+	System.inform("audio streams=" + movie.numberOfAudioStream + " duration=" + movie.totalTime);
+	movie.play();
+	System.inform("AV-PROBE-STARTED");
+}
+probe();

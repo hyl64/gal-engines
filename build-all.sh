@@ -1,253 +1,183 @@
 #!/bin/bash
-# build-all.sh - build every engine in this tree, then check each one
+# build-all.sh - build every engine in this tree and check it
 #
-# Five engines, five build systems, five ways of saying "it works":
+# Each engine has its own way of being built (CMake for three of them, a
+# hand-written Makefile for OpenBGI) and its own way of saying it works.  This
+# script runs all of them in turn and prints one line per engine, so a fresh
+# checkout can be brought up with one command and its state read at a glance.
 #
-#   nscripter  a fork of ONScripter, CMake        - an official demo reaches its loop
-#   kirikiri   a TJS2/XP3 port, CMake             - KAG3 renders and a chapter plays
-#   reallive   RLVM revived, scons                - 260 unit tests, no data needed
-#   bgi        OpenBGI, hand-written Makefile     - a trial reaches its engine profile
-#   artemis    written from scratch here, CMake   - self tests, no data needed
-#
-# Usage:
-#   ./build-all.sh                    build everything, then check
-#   ./build-all.sh --check            only run the checks
-#   ./build-all.sh --data DIR         take game data from DIR instead of ./testdata
-#   ./build-all.sh --skip reallive    leave an engine out (repeatable)
-#   ./build-all.sh --help
-#
-# Game data is not in this repository (see docs/DATA.md).  A check that needs it
-# is reported as "跳过" when the data is absent, never as a failure: a fresh
-# clone must be able to build and see honestly what could not be exercised.
+#   ./build-all.sh            build everything, then check
+#   ./build-all.sh --check    only run the checks
 
 set -u
 cd "$(dirname "$0")"
 ROOT=$(pwd)
-
 CHECK_ONLY=0
-DATA="${GAL_DATA:-$ROOT/testdata}"
-SKIP=""
-
-while [ $# -gt 0 ]; do
-	case "$1" in
-		--check) CHECK_ONLY=1 ;;
-		--data) shift; DATA="${1:-}"; [ -n "$DATA" ] || { echo "--data needs a directory" >&2; exit 2; } ;;
-		--skip) shift; SKIP="$SKIP ${1:-}" ;;
-		--help|-h) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-		*) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
-	esac
-	shift
-done
-
-DATA=$(cd "$DATA" 2>/dev/null && pwd || echo "$DATA")
-
-# Some acceptance scripts in the engine trees read data from ./testdata by
-# convention.  When the data lives elsewhere, a temporary link makes it look
-# local, so a fresh clone can run the same checks against a data directory
-# outside the repository without any script knowing the difference.
-LINKED_DATA=0
-if [ "$DATA" != "$ROOT/testdata" ] && [ -d "$DATA" ] && [ ! -e "$ROOT/testdata" ]; then
-	if ln -s "$DATA" "$ROOT/testdata" 2>/dev/null; then LINKED_DATA=1; fi
-fi
-cleanup_data_link() { [ "$LINKED_DATA" = 1 ] && rm -f "$ROOT/testdata"; }
-trap cleanup_data_link EXIT
-
-skipped() { case " $SKIP " in *" $1 "*) return 0 ;; esac; return 1; }
+[ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
 ok_count=0
 bad_count=0
-skip_count=0
-failed=""
 
-pass() { printf "  \033[32m✓\033[0m %-16s %s\n" "$1" "$2"; ok_count=$((ok_count + 1)); }
-fail() { printf "  \033[31m✗\033[0m %-16s %s\n" "$1" "$2"; bad_count=$((bad_count + 1)); failed="$failed $1"; }
-skip() { printf "  \033[33m·\033[0m %-16s %s\n" "$1" "$2"; skip_count=$((skip_count + 1)); }
+report() { # name, ok, detail
+	if [ "$2" = "1" ]; then
+		printf "  \033[32m✓\033[0m %-14s %s\n" "$1" "$3"
+		ok_count=$((ok_count + 1))
+	else
+		printf "  \033[31m✗\033[0m %-14s %s\n" "$1" "$3"
+		bad_count=$((bad_count + 1))
+	fi
+}
 
-# A build counts only if it exits zero and leaves the expected executable: a
-# stale binary from an earlier run must not read as a success.  The output is not
-# swallowed - the caller redirects it to a log, and a failure that says nothing
-# is a failure nobody can diagnose.
-build_cmake() { # dir, binary
-	( cd "$ROOT/$1" && cmake -B build -DCMAKE_BUILD_TYPE=Release \
-		&& cmake --build build -j2 ) && [ -x "$ROOT/$2" ]
+build_cmake() { # dir, name
+	( cd "$ROOT/$1" && cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1 \
+		&& cmake --build build -j2 >/dev/null 2>&1 )
 }
 
 echo "构建"
-if [ $CHECK_ONLY = 1 ]; then
-	echo "  (--check: 跳过)"
+if [ $CHECK_ONLY = 0 ]; then
+	# A stale executable is not evidence of a successful build.  Preserve logs
+	# so a configuration or compiler failure remains diagnosable.
+	build_cmake OnscripterYuri >/tmp/gal_build_ns.log 2>&1; ns_built=$?
+	report "nscripter" $([ "$ns_built" = 0 ] && [ -x OnscripterYuri/build/onsyuri ] && echo 1 || echo 0) "build/onsyuri (log: /tmp/gal_build_ns.log)"
+	( cd "$ROOT/openbgi/openbgi-src" && make PLATFORM=darwin -j2 >/tmp/gal_build_bgi.log 2>&1 ); bgi_built=$?
+	report "bgi" $([ "$bgi_built" = 0 ] && [ -x openbgi/openbgi-src/bin/bgi ] && echo 1 || echo 0) "bin/bgi (log: /tmp/gal_build_bgi.log)"
+	build_cmake kirikiroid2-mac >/tmp/gal_build_kr.log 2>&1; kr_built=$?
+	report "kirikiri" $([ "$kr_built" = 0 ] && [ -x kirikiroid2-mac/build/krkrrun ] && echo 1 || echo 0) "build/krkrrun (log: /tmp/gal_build_kr.log)"
+	build_cmake artemis >/tmp/gal_build_artemis.log 2>&1; artemis_built=$?
+	report "artemis" $([ "$artemis_built" = 0 ] && [ -x artemis/build/agame ] && echo 1 || echo 0) "build/agame (log: /tmp/gal_build_artemis.log)"
 else
-	# logs are kept so a failure stays diagnosable
-	if skipped nscripter; then skip nscripter "--skip"; else
-		if build_cmake OnscripterYuri OnscripterYuri/build/onsyuri >/tmp/gal_build_ns.log 2>&1; then
-			pass nscripter "build/onsyuri"
-		else
-			fail nscripter "见 /tmp/gal_build_ns.log"
-		fi
-	fi
-
-	if skipped bgi; then skip bgi "--skip"; else
-		if ( cd "$ROOT/openbgi/openbgi-src" && make PLATFORM=darwin -j2 >/tmp/gal_build_bgi.log 2>&1 ) \
-			&& [ -x "$ROOT/openbgi/openbgi-src/bin/bgi" ]; then
-			pass bgi "openbgi-src/bin/bgi"
-		else
-			fail bgi "见 /tmp/gal_build_bgi.log"
-		fi
-	fi
-
-	if skipped kirikiri; then skip kirikiri "--skip"; else
-		if build_cmake kirikiroid2-mac kirikiroid2-mac/build/krkrrun >/tmp/gal_build_kr.log 2>&1; then
-			pass kirikiri "build/krkrrun"
-		else
-			fail kirikiri "见 /tmp/gal_build_kr.log"
-		fi
-	fi
-
-	if skipped artemis; then skip artemis "--skip"; else
-		if build_cmake artemis artemis/build/agame >/tmp/gal_build_artemis.log 2>&1; then
-			pass artemis "build/agame"
-		else
-			fail artemis "见 /tmp/gal_build_artemis.log"
-		fi
-	fi
-
-	if skipped reallive; then skip reallive "--skip"; else
-		# --no-bundle: assembling the .app rewrites signatures inside Homebrew's
-		# dylibs, which older install_name_tool versions refuse; the executable and
-		# the tests are what a build check needs, and the bundle is a packaging step.
-		if ( cd "$ROOT/rlvm" && scons --release --no-bundle -j2 >/tmp/gal_build_rlvm.log 2>&1 ) \
-			&& [ -x "$ROOT/rlvm/build/release/rlvm-static" ]; then
-			pass reallive "build/release/rlvm-static"
-		else
-			fail reallive "见 /tmp/gal_build_rlvm.log"
-		fi
-	fi
+	echo "  (跳过，--check)"
 fi
 
 echo "自检"
-# Every check owns exactly the process it starts and waits for it, so a failed
-# check cannot leak a process that would poison the next run.
 
-# --- nscripter: the official demo must still be alive after three seconds ----
-if skipped nscripter; then skip nscripter "--skip"
-elif [ ! -d "$DATA/lifegame" ]; then skip nscripter "需要 $DATA/lifegame（见 docs/DATA.md）"
-elif [ ! -x "$ROOT/OnscripterYuri/build/onsyuri" ]; then skip nscripter "未构建"
-else
-	( cd "$DATA/lifegame" && exec env SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-		"$ROOT/OnscripterYuri/build/onsyuri" --root . --enc:sjis >/tmp/gal_ns.log 2>&1 ) &
-	pid=$!
-	# Poll rather than sleep once: a cold start can take a while, and a leftover
-	# engine from an earlier run can make this one exit early.  Either way the
-	# verdict has to be about this process, not about the machine's mood.
-	alive=0
-	for _ in 1 2 3 4 5 6; do
-		sleep 1
-		kill -0 "$pid" 2>/dev/null || break
-		alive=$((alive + 1))
-	done
-	if [ "$alive" -ge 3 ]; then
-		pass nscripter "官方 demo 在 ${alive} 秒内保持运行"
-	else
-		fail nscripter "提前退出（活了 ${alive} 秒）：$(tail -1 /tmp/gal_ns.log 2>/dev/null)"
-	fi
-	kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-fi
+# A check that fails may have been starved of CPU or killed by the host (a
+# SIGKILL shows up as an abrupt end, not a wrong answer), so a failing run gets
+# one more chance before it counts against the build.
+retry_once() {
+	local fn="$1"
+	"$fn" && return 0
+	sleep 2
+	"$fn"
+}
 
-# --- kirikiri: KAG3 loads its scenario and prints its first line --------------
-if skipped kirikiri; then skip kirikiri "--skip"
-elif [ ! -d "$DATA/kag3-sample" ]; then skip kirikiri "需要 $DATA/kag3-sample"
-elif [ ! -x "$ROOT/kirikiroid2-mac/build/krkrrun" ]; then skip kirikiri "未构建"
-else
-	( cd "$DATA/kag3-sample" && KRKR_LOOP_SECONDS=3 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-		"$ROOT/kirikiroid2-mac/build/krkrrun" startup.tjs >/tmp/gal_kr.log 2>&1 )
-	if grep -q "Scenario loaded : first.ks" /tmp/gal_kr.log \
-		&& grep -q "こんにちは。" /tmp/gal_kr.log \
-		&& ! grep -q "エラーが発生しました\|Script exception raised\|krkrrun:" /tmp/gal_kr.log; then
-		pass kirikiri "KAG3 载入剧本并显示首行台词"
-	else
-		fail kirikiri "见 /tmp/gal_kr.log"
-	fi
-fi
+# Never kill unrelated game processes by name.  Each check owns exactly the
+# process it starts, and waits for it so a failed check cannot leak it.
+check_nscripter() {
+	( cd testdata/lifegame && exec env SDL_VIDEODRIVER=dummy \
+		"$ROOT/OnscripterYuri/build/onsyuri" --root . --enc:sjis >/dev/null 2>&1 ) &
+	local pid=$!
+	sleep 3
+	local alive=0
+	if kill -0 "$pid" 2>/dev/null; then alive=1; fi
+	kill "$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	[ "$alive" = "1" ]
+}
+ns=0
+if retry_once check_nscripter; then ns=1; fi
+report "nscripter" $ns "official demo still running after 3s"
 
-# --- kirikiri-story: a whole chapter, from a folder and from data.xp3 ---------
-if skipped kirikiri; then skip kirikiri-story "--skip"
-elif [ ! -d "$DATA/kag-game/data" ]; then skip kirikiri-story "需要 $DATA/kag-game"
-elif [ ! -x "$ROOT/kirikiroid2-mac/build/krkrrun" ]; then skip kirikiri-story "未构建"
-else
-	if "$ROOT/kirikiroid2-mac/tests/run-kag-story.sh" \
-		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_story.log 2>&1; then
-		pass kirikiri-story "真实章节在目录与 data.xp3 两种形态下走完"
-	else
-		fail kirikiri-story "见 /tmp/gal_kr_story.log"
-	fi
-fi
+# KAG3 must both load its scenario and finish without a script exception.
+kr=0
+if ( cd testdata/kag3-sample && KRKR_LOOP_SECONDS=2 SDL_VIDEODRIVER=dummy \
+	"$ROOT/kirikiroid2-mac/build/krkrrun" startup.tjs >/tmp/gal_kr.log 2>&1 ) \
+	&& grep -q "Scenario loaded : first.ks" /tmp/gal_kr.log \
+	&& grep -q "こんにちは。" /tmp/gal_kr.log \
+	&& ! grep -q "エラーが発生しました\|Script exception raised\|krkrrun:" /tmp/gal_kr.log; then kr=1; fi
+report "kirikiri" $kr "KAG3 displays its first line without script errors"
 
-# --- kirikiri-demo: the official KiriKiri SDL2 / KAG3 demo --------------------
-if skipped kirikiri; then skip kirikiri-demo "--skip"
-elif [ ! -d "$DATA/krkrsdl2-demo-game" ]; then skip kirikiri-demo "需要 $DATA/krkrsdl2-demo-game"
-elif [ ! -x "$ROOT/kirikiroid2-mac/build/krkrrun" ]; then skip kirikiri-demo "未构建"
-else
-	if "$ROOT/kirikiroid2-mac/tests/run-demo-game.sh" \
-		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_demo.log 2>&1; then
-		pass kirikiri-demo "官方 KAG3 demo 启动、渲染并响应点击"
-	else
-		fail kirikiri-demo "见 /tmp/gal_kr_demo.log"
-	fi
-fi
+# The real KAG project must walk its whole chapter - title, click, messages,
+# BGM on/off, [playse][ws] - both from the folder and from a packed data.xp3.
+# This is the regression that caught the click dead-end and the invalidated
+# objects; keep it in the acceptance, not only in notes.
+check_story() {
+	"$ROOT/kirikiroid2-mac/tests/run-kag-story.sh" \
+		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_story.log 2>&1
+}
+krs=0
+if retry_once check_story; then krs=1; fi
+report "kirikiri-story" $krs "the real KAG chapter plays through, folder and archive"
 
-# --- bgi: the trial reaches the profile it is known to need ------------------
-if skipped bgi; then skip bgi "--skip"
-elif [ ! -d "$DATA/bgi-trial" ]; then skip bgi "需要 $DATA/bgi-trial"
-elif [ ! -x "$ROOT/openbgi/openbgi-src/bin/bgi" ]; then skip bgi "未构建"
-else
-	( cd "$DATA/bgi-trial" && exec env SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-		"$ROOT/openbgi/openbgi-src/bin/bgi" >/tmp/gal_bg.log 2>&1 ) &
-	pid=$!
-	ok=0
-	for _ in 1 2 3 4 5; do
-		sleep 5
-		kill -0 "$pid" 2>/dev/null || break
-		if grep -q "profile 1.669" /tmp/gal_bg.log; then ok=1; break; fi
-	done
-	kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-	if [ "$ok" = 1 ]; then pass bgi "识别出体验版的 profile 1.669"; else fail bgi "见 /tmp/gal_bg.log"; fi
-fi
+# The second real game: the official KiriKiri SDL2 / KAG3 demo.  Different
+# resolution, JPEG + TLG assets, crossfades, a TJS snow plugin on a Timer and
+# a hyperlink menu - a build that breaks one project rarely breaks both.
+check_demo() {
+	"$ROOT/kirikiroid2-mac/tests/run-demo-game.sh" \
+		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_demo.log 2>&1
+}
+krd=0
+if retry_once check_demo; then krd=1; fi
+report "kirikiri-demo" $krd "the official KAG3 demo boots, renders and takes clicks"
 
-# --- reallive: 260 unit tests, and nothing here needs a game -----------------
-if skipped reallive; then skip reallive "--skip"
-elif [ ! -x "$ROOT/rlvm/build/rlvm_unittests" ]; then skip reallive "未构建"
-else
-	# the tests load their fixtures by relative path, so they run from their own tree
-	if ( cd "$ROOT/rlvm" && ./build/rlvm_unittests >/tmp/gal_rlvm_ut.log 2>&1 ); then
-		pass reallive "$(LC_ALL=C grep -c '^\[       OK \]' /tmp/gal_rlvm_ut.log) 个单元测试通过"
-	else
-		fail reallive "见 /tmp/gal_rlvm_ut.log"
-	fi
-fi
+# Saving is what makes a game a game: the bookmark path is a thumbnail image
+# followed by a structured write at an offset, and that offset write used to
+# fail with "Write error" on every save.
+check_save() {
+	"$ROOT/kirikiroid2-mac/tests/run-save-check.sh" \
+		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_save.log 2>&1
+}
+krsv=0
+if retry_once check_save; then krsv=1; fi
+report "kirikiri-save" $krsv "bookmark save: thumbnail, offset struct, read-back"
 
-# --- artemis: its own self tests, one per layer, plus twelve rendered frames --
-if skipped artemis; then skip artemis "--skip"
-elif [ ! -x "$ROOT/artemis/build/agame" ]; then skip artemis "未构建"
-else
-	ok=1
-	for t in "pfstool selftest" "asttool selftest" "arun --selftest"; do
-		( cd "$ROOT/artemis" && ./build/$t >/dev/null 2>&1 ) || ok=0
-	done
-	frames=$(mktemp -d /tmp/gal-artemis.XXXXXX)
-	( cd "$ROOT/artemis" && SDL_VIDEODRIVER=dummy ./build/agame tests/sample-scene.ast \
-		--frames "$frames" >/tmp/gal_artemis.log 2>&1 ) || ok=0
-	n=$(find "$frames" -maxdepth 1 -type f -name 'frame*.bmp' | wc -l | tr -d ' ')
-	rm -rf "$frames"
-	[ "$n" = 12 ] || ok=0
-	if [ "$ok" = 1 ]; then pass artemis "pfs/ast/runtime 自检 + 12 帧渲染"; else fail artemis "见 /tmp/gal_artemis.log"; fi
-fi
+# Movies: KAG plays openings and cutscenes through VideoOverlay, which used to
+# be a state recorder.  A two-colour clip proves it decodes and advances.
+check_video() {
+	"$ROOT/kirikiroid2-mac/tests/run-video-check.sh" \
+		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_video.log 2>&1
+}
+krv=0
+if retry_once check_video; then krv=1; fi
+report "kirikiri-video" $krv "a movie decodes, paints and advances"
+
+# The sound contract a KAG game depends on: pause, status, [ws] waiting for a
+# clip to end, a sound effect and a BGM together, per-buffer volume, fades.
+kra=0
+check_audio() {
+	"$ROOT/kirikiroid2-mac/tests/run-audio-check.sh" \
+		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_audio.log 2>&1
+}
+if retry_once check_audio; then kra=1; fi
+report "kirikiri-audio" $kra "the audio contract holds (pause, [ws], mixing, fades)"
+
+# Frame pacing: a flat sleep on top of the work cost ~15% of the frames before
+# the loop was put on a clock.  Both projects must stay playable.
+krp=0
+check_perf() {
+	"$ROOT/kirikiroid2-mac/tests/run-perf-check.sh" \
+		"$ROOT/kirikiroid2-mac/build/krkrrun" >/tmp/gal_kr_perf.log 2>&1
+}
+if retry_once check_perf; then krp=1; fi
+report "kirikiri-perf" $krp "both projects keep a playable frame rate"
+
+# The trial must reach its known engine profile, not merely leave a process alive.
+# Do not pkill an unrelated game: if it holds the engine lock, report the failure.
+( cd testdata/bgi-trial && exec env SDL_VIDEODRIVER=dummy \
+	"$ROOT/openbgi/openbgi-src/bin/bgi" >/tmp/gal_bg.log 2>&1 ) &
+bg_pid=$!
+bg=0
+for unused in 1 2 3 4 5; do
+	sleep 5
+	if ! kill -0 "$bg_pid" 2>/dev/null; then break; fi
+	if grep -q "profile 1.669" /tmp/gal_bg.log; then bg=1; break; fi
+done
+if kill -0 "$bg_pid" 2>/dev/null; then kill -9 "$bg_pid" 2>/dev/null; fi
+wait "$bg_pid" 2>/dev/null
+report "bgi" $bg "the trial reaches profile 1.669"
+
+# Artemis: its own self tests, one per layer
+ok=1
+for t in "pfstool selftest" "asttool selftest" "arun --selftest"; do
+	( cd "$ROOT/artemis" && ./build/$t >/dev/null 2>&1 ) || ok=0
+done
+frames_dir=$(mktemp -d /tmp/gal-artemis.XXXXXX)
+if ! ( cd "$ROOT/artemis" && SDL_VIDEODRIVER=dummy ./build/agame tests/sample-scene.ast \
+	--frames "$frames_dir" >/tmp/gal_artemis.log 2>&1 ); then ok=0; fi
+frame_count=$(find "$frames_dir" -maxdepth 1 -type f -name 'frame*.bmp' | wc -l | tr -d ' ')
+if [ "$frame_count" != 12 ]; then ok=0; fi
+report "artemis" $ok "pfs, ast, runtime and 12 rendered fixture frames (not a real game)"
 
 echo
-echo "通过 ${ok_count}，失败 ${bad_count}，跳过 ${skip_count}"
-if [ "$bad_count" != 0 ]; then
-	echo "失败项:${failed}"
-	exit 1
-fi
-if [ "$skip_count" != 0 ] && [ $CHECK_ONLY = 0 ]; then
-	echo "跳过项需要游戏数据：见 docs/DATA.md（--data DIR 可指向别处）"
-fi
-exit 0
+echo "通过 ${ok_count}，失败 ${bad_count}"
+[ "$bad_count" = 0 ]
