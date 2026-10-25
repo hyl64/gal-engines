@@ -15,7 +15,7 @@
 # The source repository column is what sync-engines.sh reads; paths beginning
 # with ~ are resolved against $HOME.
 
-nscripter  OnscripterYuri  7eff7fe597237e3c34e1ff070728bf251f11aed7  ~/Documents/gal-engines/OnscripterYuri
+nscripter  OnscripterYuri  7815aeb7e1a4c1d5c29b32a528d05fb69f4e7154  ~/Documents/gal-engines/OnscripterYuri
 kirikiri    kirikiroid2-mac        a78bd479e7907c7c02d153348646eab1ac1c1eff  ~/Documents/gal-engines/kirikiroid2-mac
 reallive    rlvm                   8e2adc5ec1d6c92d1c4fcc3d66f88f690024c9da  ~/Documents/rlvm
 bgi         openbgi/openbgi-src    6a620c57935cd34cb9f8f41aaa5e3e350033332f  ~/Documents/gal-engines/openbgi/openbgi-src
