@@ -44,7 +44,9 @@ LIBRARY = os.path.expanduser("~/Library/Application Support/gal/library.json")
 def _reallive_binary():
     """Where RLVM's app bundle is: beside this tree first, then a checkout of its own."""
     candidates = [
+        # the packaged bundle, then the plain executable a --no-bundle build makes
         os.path.join(ENGINES_ROOT, "rlvm", "build", "rlvm.app", "Contents", "MacOS", "rlvm"),
+        os.path.join(ENGINES_ROOT, "rlvm", "build", "release", "rlvm-static"),
         os.path.expanduser("~/Documents/rlvm/build/rlvm.app/Contents/MacOS/rlvm"),
     ]
     for path in candidates:

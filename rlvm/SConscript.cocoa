@@ -81,7 +81,16 @@ bundle_inputs += static_env.InstallAs(
 # above is what lets that dlopen hit. The fixup depends on every file the
 # bundle will carry, because it signs the whole thing when it runs.
 brew = env.get('BREW_PREFIX', '/opt/homebrew')
-static_env.Command(
+# The fixup below rewrites load commands inside third-party dylibs, which needs
+# an install_name_tool new enough to handle a Homebrew library that already
+# carries a signature; Xcode 15's refuses with "file not in an order that can be
+# processed".  --no-bundle builds the executable and the tests and leaves the
+# .app for a machine whose toolchain can finish it.
+AddOption('--no-bundle', action='store_true',
+          help='build the executable and tests without assembling rlvm.app')
+
+if not GetOption('no_bundle'):
+    static_env.Command(
   '$OUTPUT_DIR/rlvm.app/Contents/Frameworks/.bundle-fixed',
   bundle_inputs,
   # Literal "build/", as in the pkg-dmg line below: $OUTPUT_DIR expands

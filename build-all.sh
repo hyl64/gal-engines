@@ -111,9 +111,12 @@ else
 	fi
 
 	if skipped reallive; then skip reallive "--skip"; else
-		if ( cd "$ROOT/rlvm" && scons --release -j2 >/tmp/gal_build_rlvm.log 2>&1 ) \
-			&& [ -x "$ROOT/rlvm/build/rlvm.app/Contents/MacOS/rlvm" ]; then
-			pass reallive "build/rlvm.app"
+		# --no-bundle: assembling the .app rewrites signatures inside Homebrew's
+		# dylibs, which older install_name_tool versions refuse; the executable and
+		# the tests are what a build check needs, and the bundle is a packaging step.
+		if ( cd "$ROOT/rlvm" && scons --release --no-bundle -j2 >/tmp/gal_build_rlvm.log 2>&1 ) \
+			&& [ -x "$ROOT/rlvm/build/release/rlvm-static" ]; then
+			pass reallive "build/release/rlvm-static"
 		else
 			fail reallive "见 /tmp/gal_build_rlvm.log"
 		fi
