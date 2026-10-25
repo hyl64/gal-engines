@@ -36,6 +36,7 @@
 
 #include "../builtin_layer.h"
 #include "../video_player_frame.h"
+#include "../video_player.h"
 #include "../BaseReader.h"
 #include "../Utils.h"
 
@@ -239,6 +240,46 @@ private:
         (void)name_len;
         movie.clear();
         entry_name = name;
+
+        /* The transcode pipeline (gal prep) writes H.264 copies of the archive's
+         * movies into _video/ with a sidecar map; the fullscreen path consults
+         * that map and so must the layer: the raw archive bytes are MPEG-1/2,
+         * which AVFoundation cannot decode, so a layer fed straight from the
+         * archive shows nothing while its decoder sits at EOF. */
+        if (!game_root.empty()){
+            char *mapped = videoMapLookup(game_root.c_str(), name);
+            if (mapped){
+                std::string rel = mapped;
+                free(mapped);
+                std::string full = game_root;
+                if (!full.empty() && full[full.size()-1] != '/') full += '/';
+                for (const char *p = rel.c_str(); p && *p; p++) full += (*p == '\\' ? '/' : *p);
+                FILE *fp = fopen(full.c_str(), "rb");
+                if (fp){
+                    fseek(fp, 0, SEEK_END);
+                    long sz = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
+                    if (sz > 0 && sz < (long)256 * 1024 * 1024){
+                        movie.resize((size_t)sz);
+                        if (fread(movie.data(), 1, (size_t)sz, fp) != (size_t)sz) movie.clear();
+                    }
+                    fclose(fp);
+                    if (!movie.empty()){
+                        utils::printInfo("wcmpg: '%s' -> %s (transcoded)\n", name, rel.c_str());
+                        // the mapped bytes win: the archive copy is MPEG-1/2, which
+                        // AVFoundation cannot decode -- falling through would
+                        // overwrite the playable data with unplayable bytes
+                        if (avfLayerOpenMemory(name, movie.data(), (int)movie.size(),
+                                               loop_flag ? 1 : 0) == 0){
+                            opened = true;
+                            visible = true;
+                            paused = true;
+                        }
+                        return;
+                    }
+                }
+            }
+        }
 
         if (reader){
             size_t len = reader->getFileLength(name);

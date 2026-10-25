@@ -2856,3 +2856,19 @@ line pitch = 18 px
 第三次改用 `str.encode('cp932')` 直接编码 + 反斜杠换行，一次成功。
 
 **引擎的文字路径从头到尾都是好的。**
+
+
+## wcmpg 层影片接入转码映射（进行中）
+
+层影片（wcmpg）原先把**归档里的 MPEG-1/2 原始字节**直接交给 AVFoundation——
+而 AVFoundation 解不了 MPEG-1/2，层解码器永远 EOF（`refresh-fetch got=0`），
+层黑屏。全屏影片能播是因为走了 `gal prep` 的转码映射（`_video/*.mp4` +
+`video_map.json`）；层现在也查映射：命中则读转码后的 MP4 字节并跳过归档重读
+（否则可播放的转码数据会被归档的 MPEG 字节覆盖回去）。
+
+验证：`wcmpg: 'sys2\MOV003_title_loop.mpg' -> ./_video/MOV003_title_loop.mp4
+(transcoded)`；转码产物内容正确（ffprobe 190 帧/6.3 秒，抽帧为 07th splash）。
+
+**遗留**：帧到达 refresh（`got=1 w=1024 h=576 pitch=4096`）后上屏仍为黑——
+blit 或呈现环节，下一轮查。诊断开关：`ONS_TRACE_LAYER_FRAME`（refresh 取帧/
+发布中心像素采样，写 ons_layerframe.log 与 ons_layercolor.log）。
