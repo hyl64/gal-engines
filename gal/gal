@@ -1428,6 +1428,53 @@ def cmd_remove(args):
     return 0
 
 
+def cmd_app(args):
+    """gal app <名字> — 生成一个双击即玩的 .app（启动器：调用 gal play）。"""
+    lib = load_library()
+    name = args.game
+    if name not in lib["games"]:
+        print(f"gal: 库里没有 {name}", file=sys.stderr)
+        return 1
+    outdir = os.path.expanduser(args.out) if args.out else os.path.expanduser("~/Desktop")
+    appdir = os.path.join(outdir, f"{name}.app", "Contents", "MacOS")
+    os.makedirs(appdir, exist_ok=True)
+    gal_path = os.path.realpath(__file__)
+
+    launcher = f"""#!/bin/bash
+# 双击启动器：{name}
+LOG="$HOME/Library/Logs/gal-{name}.log"
+echo "=== gal play {name} $(date) ===" >> "$LOG"
+{sys.executable} "{gal_path}" play "{name}" >> "$LOG" 2>&1
+RC=$?
+if [ $RC != 0 ]; then
+    osascript -e 'display notification "启动失败，详见 ~/Library/Logs/gal-{name}.log" with title "gal"' 2>/dev/null
+fi
+exit $RC
+"""
+    exe = os.path.join(appdir, name)
+    with open(exe, "w") as f:
+        f.write(launcher)
+    os.chmod(exe, 0o755)
+
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>{name}</string>
+    <key>CFBundleIdentifier</key><string>local.gal.{re.sub(r'[^A-Za-z0-9]', '', name) or 'game'}</string>
+    <key>CFBundleExecutable</key><string>{name}</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>LSUIElement</key><true/>
+</dict>
+</plist>
+"""
+    with open(os.path.join(outdir, f"{name}.app", "Contents", "Info.plist"), "w") as f:
+        f.write(plist)
+    print(f"已生成: {outdir}/{name}.app（双击即玩，日志在 ~/Library/Logs/gal-{name}.log）")
+    return 0
+
+
 def cmd_doctor(args):
     ok = True
     print("引擎二进制:")
@@ -1481,6 +1528,11 @@ def main(argv):
     p.add_argument("game", metavar="game|path")
     p.add_argument("rest", nargs="*", help="-- 之后的参数原样转发给 harness")
     p.set_defaults(func=cmd_savetest)
+
+    p = sub.add_parser("app", help="生成双击即玩的 .app 启动器")
+    p.add_argument("game")
+    p.add_argument("--out", help="输出目录（默认 ~/Desktop）")
+    p.set_defaults(func=cmd_app)
 
     sub.add_parser("list", help="列出库").set_defaults(func=cmd_list)
 
