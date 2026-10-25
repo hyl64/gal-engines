@@ -23,6 +23,20 @@
  */
 
 #include "ONScripter.h"
+/* ONS_TRACE_CHAIN=1: one counter per step of the layer-movie paint path.
+ * Five rounds of guessing which link was broken; this answers it in one run. */
+static void chainProbe(const char *what, long a = -1, long b = -1)
+{
+    static int on = -1;
+    if (on < 0){ const char *e = getenv("ONS_TRACE_CHAIN"); on = (e && *e) ? 1 : 0; }
+    if (!on) return;
+    static FILE *f = NULL;
+    if (!f) f = fopen("ons_chain.log", "w");
+    if (!f) return;
+    fprintf(f, "%s %ld %ld\n", what, a, b);
+    fflush(f);
+}
+
 #include "Utils.h"
 #ifdef USE_BUILTIN_LAYER_EFFECTS
 #include "builtin_layer.h"
@@ -73,15 +87,37 @@ int ONScripter::calcDurationToNextAnimation()
     return min;
 }
 
+/* Layer plugins bring their own timer: a movie layer must keep painting while
+ * the script sits waiting for a click, which is most of a visual novel's life.
+ * proceedAnimation() only runs under WAIT_TIMER_MODE, so a title screen that
+ * waits on textbtnwait froze its movie.  This pumps just the layer sprites and
+ * leaves every other animation alone, so input-mode rendering cost is unchanged
+ * for games that have no layer. */
+void ONScripter::proceedLayerAnimation(int current_time)
+{
+#ifdef USE_BUILTIN_LAYER_EFFECTS
+    for (int i=MAX_SPRITE_NUM-1 ; i>=0 ; i--){
+        if (sprite_info[i].trans_mode == AnimationInfo::TRANS_LAYER &&
+            sprite_info[i].proceedAnimation(current_time))
+            flushDirect(sprite_info[i].pos, refreshMode() | (draw_cursor_flag?REFRESH_CURSOR_MODE:0));
+    }
+#else
+    (void)current_time;
+#endif
+}
+
 void ONScripter::proceedAnimation(int current_time)
 {
+    chainProbe("proceedAnimation", (long)event_mode, (long)current_time);
     for (int i=0 ; i<3 ; i++)
         if (tachi_info[i].proceedAnimation(current_time))
             flushDirect(tachi_info[i].pos, refreshMode() | (draw_cursor_flag?REFRESH_CURSOR_MODE:0));
         
     for (int i=MAX_SPRITE_NUM-1 ; i>=0 ; i--)
-        if (sprite_info[i].proceedAnimation(current_time))
+        if (sprite_info[i].proceedAnimation(current_time)){
+            chainProbe("spriteChanged", (long)i, (long)sprite_info[i].trans_mode);
             flushDirect(sprite_info[i].pos, refreshMode() | (draw_cursor_flag?REFRESH_CURSOR_MODE:0));
+        }
 
 #ifdef USE_LUA
     if (lua_handler.is_animatable && !script_h.isExternalScript()){
@@ -166,7 +202,17 @@ void ONScripter::setupAnimationInfo( AnimationInfo *anim, FontInfo *info )
         if (info) f_info = *info;
         f_info.rubyon_flag = anim->is_ruby_drawable;
 
-        if ( anim->font_size_xy[0] >= 0 ){ // in case of Sprite, not rclick menu
+        /* A sprite's own size only overrides the sentence font when it is a
+         * real size.  0 (and any negative value) would give the text a zero
+         * pitch, which draws every glyph on top of the previous one - that is
+         * not a size, it is "no size given", and the sentence font's size is
+         * the right answer there. */
+        /* Only an actual size overrides the sentence font.  A sprite whose tag
+         * carried no size ends up with 1 (and a pitch of 0) here, and taking
+         * that literally opens a one-pixel font: the whole line is then drawn
+         * inside a single pixel.  8 px is the smallest legible size, so below
+         * that the sentence font's metrics are the right answer. */
+        if ( anim->font_size_xy[0] >= 8 && anim->font_size_xy[1] >= 8 ){ // in case of Sprite, not rclick menu
             f_info.setTateyokoMode(0);
             f_info.top_xy[0] = anim->orig_pos.x;
             f_info.top_xy[1] = anim->orig_pos.y;
@@ -176,8 +222,11 @@ void ONScripter::setupAnimationInfo( AnimationInfo *anim, FontInfo *info )
             
             f_info.font_size_xy[0] = anim->font_size_xy[0];
             f_info.font_size_xy[1] = anim->font_size_xy[1];
-            f_info.pitch_xy[0] = anim->font_pitch[0];
-            f_info.pitch_xy[1] = anim->font_pitch[1];
+            /* a pitch below the size would overlap the glyphs */
+            f_info.pitch_xy[0] = anim->font_pitch[0] >= anim->font_size_xy[0]
+                                     ? anim->font_pitch[0] : anim->font_size_xy[0];
+            f_info.pitch_xy[1] = anim->font_pitch[1] >= anim->font_size_xy[1]
+                                     ? anim->font_pitch[1] : anim->font_size_xy[1];
 
             f_info.ttf_font[0] = NULL;
             f_info.ttf_font[1] = NULL;
@@ -431,6 +480,7 @@ void ONScripter::drawTaggedSurface( SDL_Surface *dst_surface, AnimationInfo *ani
 {
 #ifdef USE_BUILTIN_LAYER_EFFECTS
   if (anim->trans_mode == AnimationInfo::TRANS_LAYER) {
+    chainProbe("drawTaggedSurface-LAYER", (long)anim->layer_no, (long)anim->visible);
     if (anim->layer_no >= 0) {
       LayerInfo *tmp = &layer_info[anim->layer_no];
       if (tmp->handler) tmp->handler->refresh(dst_surface, clip);

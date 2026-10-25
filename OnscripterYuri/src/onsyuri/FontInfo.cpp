@@ -100,6 +100,16 @@ void *FontInfo::openFont( char *font_file, int ratio1, int ratio2 )
     else
         font_size = font_size_xy[1];
 
+    {
+        static int seen[64], nseen = 0;
+        int already = 0;
+        for (int i = 0; i < nseen; i++) if (seen[i] == font_size) already = 1;
+        if (!already && nseen < 64){
+            seen[nseen++] = font_size;
+            utils::printInfo("font: opening a face at %d px (%s)\n", font_size, font_file);
+        }
+    }
+
     FontContainer *fc = &root_font_container;
     while( fc->next ){
         if ( fc->next->size == font_size ) break;

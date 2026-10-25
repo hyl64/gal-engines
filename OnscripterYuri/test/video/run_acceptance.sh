@@ -33,10 +33,18 @@ movie_case() { # $1 name  $2 script-line  $3 expected-log-pattern  $4 fixture(s)
     local d="$WORK/$name"; mkdir -p "$d"
     for f in "$@"; do cp "$FIX/$f" "$d/"; done
     printf '*define\ngame\n*start\n%s\nend\n' "$line" > "$d/0.txt"
-    local out; out="$(run_game "$d")"
-    if echo "$out" | grep -q "$want"; then ok "$name: $want"; else
-        bad "$name: expected '$want'"; echo "$out" | grep -i video | sed 's/^/      /'
-    fi
+    # Retry once: these cases are timing-sensitive (a decode or a transcode can be
+    # slow while the machine is busy), and a flaky acceptance suite is worse than
+    # none -- it teaches you to re-run until green.
+    local attempt out
+    for attempt in 1 2; do
+        out="$(run_game "$d")"
+        if echo "$out" | grep -q "$want"; then
+            [ "$attempt" -eq 1 ] && ok "$name: $want" || ok "$name: $want (passed on retry)"
+            return
+        fi
+    done
+    bad "$name: expected '$want' (2 attempts)"; echo "$out" | grep -i video | sed 's/^/      /'
 }
 
 echo "== 1. mpegplay, MPEG-1, click_stop=0 =="

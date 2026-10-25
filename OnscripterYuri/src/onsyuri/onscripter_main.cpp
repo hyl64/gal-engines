@@ -477,8 +477,37 @@ void parseOption(int argc, char *argv[]) {
     }
 }
 
+#if defined(MACOSX)
+#include <execinfo.h>
+#include <signal.h>
+/* A commercial game crashed here with no usable message.  Printing a backtrace
+ * on SIGSEGV/SIGABRT turns "it dies somewhere in the script runner" into a line
+ * number, which is the difference between guesswork and a fix. */
+static void crashHandler(int sig)
+{
+    void *frames[64];
+    int n = backtrace(frames, 64);
+    fprintf(stderr, "\n*** signal %d, %d frames ***\n", sig, n);
+    backtrace_symbols_fd(frames, n, fileno(stderr));
+    fflush(stderr);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+static void installCrashHandler()
+{
+    const char *e = getenv("ONS_CRASH_HANDLER");
+    if (e && *e && !strcmp(e, "0")) return;
+    signal(SIGSEGV, crashHandler);
+    signal(SIGABRT, crashHandler);
+    signal(SIGBUS, crashHandler);
+}
+#else
+static void installCrashHandler() {}
+#endif
+
 int main(int argc, char *argv[])
 {
+    installCrashHandler();
 #if defined(PSP)
     ons.disableRescale();
     ons.enableButtonShortCut();

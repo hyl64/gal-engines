@@ -278,6 +278,22 @@ int ScriptParser::setlayerCommand()
     } else if ((bslash && !strncmp(bslash + 1, "hana.dll", 8)) ||
         !strncmp(dll, "hana.dll", 8)) {
         handler = new FuruLayer(screen_width, screen_height, true, script_h.cBR);
+    } else if ((bslash && !strncmp(bslash + 1, "wcmpg.dll", 9)) ||
+        !strncmp(dll, "wcmpg.dll", 9)) {
+        /* Movie layer.  Real NScripter games play their movies this way --
+         * setlayer + layermessage open/setloop/setx/sety/play/pause/close --
+         * not through mpegplay or movie.  See layer_wcmpg.cpp. */
+        handler = createWcmpgLayer(screen_width, screen_height, archive_path);
+    } else if ((bslash && (!strncmp(bslash + 1, "anm.dll", 7) ||
+                           !strncmp(bslash + 1, "screen.dll", 10) ||
+                           !strncmp(bslash + 1, "NSFukuro.dll", 12))) ||
+               (!strncmp(dll, "anm.dll", 7) ||
+                !strncmp(dll, "screen.dll", 10) ||
+                !strncmp(dll, "NSFukuro.dll", 12))) {
+        /* Proprietary effect plugins.  Accept them so a game's define block
+         * does not fail; they draw nothing (layer_stub.cpp explains why this is
+         * the honest choice and what would replace it). */
+        handler = createStubLayer(dll, screen_width, screen_height);
     } else {
         utils::printError("setlayer: layer effect '%s' is not implemented.", dll);
         return RET_CONTINUE;
@@ -285,8 +301,62 @@ int ScriptParser::setlayerCommand()
 
     utils::printInfo("Setup layer effect for '%s'.\n", dll);
     layer->handler = handler;
+    /* the plugin opens the game's own files; hand it the engine's reader so it
+     * sees the archives, not just loose files (Layer::reader, builtin_layer.h) */
+    handler->reader = script_h.cBR;
     #endif // ndef USE_BUILTIN_LAYER_EFFECTS
 
+    return RET_CONTINUE;
+}
+
+/* deletemenu -- NScripter games call this in the define block to say "do not
+ * show the default right-click menu, I draw my own".  Clearing the link list is
+ * what the original does; the menu simply has no entries left. */
+int ScriptParser::deletemenuCommand()
+{
+    deleteRMenuLink();
+    rmenu_link_num = 0;
+    rmenu_link_width = 0;
+    return RET_CONTINUE;
+}
+
+/* errorsave ["file"] -- name the file NScripter writes uncaught errors to.
+ * Optional argument; trt_trial calls it bare.  We keep the name (for the error
+ * path to use) and never fail the define block over it. */
+int ScriptParser::errorsaveCommand()
+{
+    if (script_h.getEndStatus() & ScriptHandler::END_COMMA){
+        // nothing: errorsave takes an optional filename as the rest of the line
+    }
+    const char *buf = script_h.getNext();
+    // The original accepts a bare `errorsave` with no argument at all.
+    if (buf && buf[0] != '\n' && buf[0] != ';' && buf[0] != 0){
+        const char *fn = script_h.readStr();
+        if (fn && fn[0]) setStr(&error_save_file, fn);
+    }
+    return RET_CONTINUE;
+}
+
+/* font $var -- select the text font.  ONScripter has one font file at a time
+ * (default.ttf) plus any loaded ttf_font[]; a name we do not have is not an
+ * error, it just keeps the current font.  The argument is a string variable or
+ * literal, so read it as a string either way. */
+int ScriptParser::fontCommand()
+{
+    const char *name = script_h.readStr();
+    if (name && name[0]){
+        /* Record the request.  ONScripter draws with a single loaded TTF, so a
+         * font we do not have cannot be honoured -- but silently keeping the
+         * current font is what the engine already does everywhere else, and it
+         * keeps 60+ calls in a real script from failing the define block. */
+        setStr(&default_env_font, name);
+        static bool reported = false;
+        if (!reported){
+            reported = true;
+            utils::printInfo("font: '%s' requested; ONScripter draws with the "
+                             "loaded TTF and ignores font switching\n", name);
+        }
+    }
     return RET_CONTINUE;
 }
 
@@ -352,6 +422,8 @@ int ScriptParser::savedirCommand()
         errorAndExit( "savedir: not in the define section" );
 
     const char *path = script_h.readStr();
+    if (getenv("ONS_SAVE_TRACE"))
+        fprintf(stderr, "[savedir] path='%s' save_dir=%p\n", path, (void*)save_dir);
 
     if (!save_dir){
         // a workaround not to overwrite save_dir given in command line options
@@ -365,11 +437,19 @@ int ScriptParser::savedirCommand()
 #else
         if ( stat( save_dir, &buf ) != 0 ) {
 #endif
-            fprintf(stderr, "savedir: %s doesn't exist.\n", save_dir);
-            delete[] save_dir;
-            save_dir = NULL;
-        
-            return RET_CONTINUE;
+            /* The game makes this directory itself with a plugin call
+             * (`exec_dll "dll\fileutil.dll/mkdir savedata"` in this one), which
+             * no back end emulates - so the directory was missing, the save dir
+             * was dropped, and every save silently went nowhere.  Creating it is
+             * what the original ends up with; when that fails, the old
+             * behaviour (no save dir) still applies. */
+            if (mkdir(save_dir, 0755) != 0 && stat(save_dir, &buf) != 0){
+                fprintf(stderr, "savedir: %s doesn't exist and cannot be created.\n", save_dir);
+                delete[] save_dir;
+                save_dir = NULL;
+                return RET_CONTINUE;
+            }
+            utils::printInfo("savedir: %s created\n", save_dir);
         }
 #endif
         

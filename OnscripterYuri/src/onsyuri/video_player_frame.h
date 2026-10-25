@@ -72,6 +72,32 @@ void avfStopAsync(void);
 int  avfIsAsyncPlaying(void);
 int  avfTickAsync(const video_host *host);
 
+/* ------------------------------------------------------------------
+ * Layer-plugin playback -- `setlayer N,..,"dll\wcmpg.dll"` followed by
+ * layermessage open/play/pause/close.  Same worker thread as the async
+ * player (a game only drives one movie layer at a time in practice), but
+ * instead of rendering, the engine's Layer::refresh() pulls the newest
+ * decoded frame and blits it wherever the layer says.
+ *
+ * avfLayerOpen   starts decoding (paused, unlooped); 0 = ok
+ * avfLayerPlay   starts/resumes advancing
+ * avfLayerPause  0 resumes, nonzero pauses
+ * avfLayerClose  stops and joins
+ * avfLayerFrame  newest frame, or 0 if none new since the last call.
+ *                The pointer is valid until the next decode into the slot;
+ *                copy or blit immediately.
+ * ------------------------------------------------------------------ */
+int  avfLayerOpen(const char *abs_path, int loop);
+/* Same, from bytes the engine's archive reader handed us (a wrong offset is
+ * not a reason to give up: the bytes are checked for a movie container
+ * signature before use).  The bytes are copied to a cache file under TMPDIR
+ * named after the entry, so a repeated open of the same movie is cheap. */
+int  avfLayerOpenMemory(const char *entry_name, const void *data, int size, int loop);
+int  avfLayerPlay(void);
+int  avfLayerPause(int pause);
+void avfLayerClose(void);
+int  avfLayerFrame(const unsigned char **px, int *w, int *h, int *pitch);
+
 #ifdef __cplusplus
 }
 #endif

@@ -56,7 +56,7 @@ cd ~/Documents/gal-engines
 
 ## 测试数据从哪来
 
-见 `RESOURCES.md`。全部是**官方免费 SDK 体验版**或**公开授权可分发**的工程：
+见 `docs/DATA.md`。全部是**官方免费 SDK 体验版**或**公开授权可分发**的工程：
 
 | 数据 | 来源 |
 |---|---|
@@ -73,7 +73,7 @@ gal-engines/
 ├── gal/gal               统一管理器（建库/选引擎/启动/验收）
 ├── STATUS.md             五引擎状态（只写实测）
 ├── VERIFICATION.md       验收记录（自动生成，含机器与日期）
-├── RESOURCES.md          真实数据的来源与现状
+├── docs/DATA.md          真实数据的来源与现状
 ├── BUILD.md              本文件
 ├── OnscripterYuri/       引擎①
 ├── kirikiroid2-mac/      引擎②

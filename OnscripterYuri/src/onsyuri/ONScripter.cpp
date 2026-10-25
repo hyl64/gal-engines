@@ -898,6 +898,19 @@ void ONScripter::flush( int refresh_mode, SDL_Rect *rect, bool clear_dirty_flag,
     if ( clear_dirty_flag ) dirty_rect.clear();
 }
 
+/* Rate limiting means the very last screen can be skipped: a game that draws
+ * once and then sits idle leaves the file holding the PREVIOUS frame, which made
+ * an acceptance check read a stale colour.  One final write at exit fixes that
+ * without giving up the rate limit. */
+char *ONScripter::surface_dump_path = NULL;
+
+void ONScripter::dumpSurfaceAtExit()
+{
+    extern ONScripter ons;
+    if (surface_dump_path && ons.accumulation_surface)
+        SDL_SaveBMP(ons.accumulation_surface, surface_dump_path);
+}
+
 void ONScripter::flushDirect( SDL_Rect &rect, int refresh_mode )
 {
     // printf("## flushDirect mode%d, %d %d %d %d\n", refresh_mode, rect.x, rect.y, rect.w, rect.h );
@@ -959,12 +972,34 @@ void ONScripter::flushDirect( SDL_Rect &rect, int refresh_mode )
         const char *dump_path = getenv("ONS_SURFACE_DUMP");
         if (dump_path && *dump_path && accumulation_surface){
             static Uint32 s_after = 0xFFFFFFFF;
+            static Uint32 s_last  = 0;
             if (s_after == 0xFFFFFFFF){
                 const char *d = getenv("ONS_SURFACE_DUMP_AFTER");
                 s_after = (d && *d) ? (Uint32)atoi(d) : 0;
             }
-            if (SDL_GetTicks() >= s_after)
-                SDL_SaveBMP(accumulation_surface, dump_path);
+            /* Rate-limited on purpose.  Writing a 1024x576 32-bit BMP is ~2.3 MB
+             * and doing it on every presented frame both dominates the frame
+             * time and can be caught mid-write when the process is signalled --
+             * that showed up as an Abort trap on SIGTERM.  Twice a second is
+             * plenty for looking at a screen. */
+            /* Keep the path for the exit-time dump below, and register the
+             * handler once. */
+            if (!surface_dump_path){
+                surface_dump_path = strdup(dump_path);
+                atexit(&ONScripter::dumpSurfaceAtExit);
+            }
+            const Uint32 now = SDL_GetTicks();
+            if (now >= s_after && now - s_last >= 500){
+                s_last = now;
+                /* Write to a side file and rename: SDL_SaveBMP truncates then
+                 * writes, so anything reading the target concurrently (a test
+                 * copying it out, for instance) can catch a half-written BMP.
+                 * That produced frames with 'size 0' and made sampling results
+                 * look random for several rounds.  rename() is atomic. */
+                std::string tmp = std::string(dump_path) + ".tmp";
+                if (SDL_SaveBMP(accumulation_surface, tmp.c_str()) == 0)
+                    rename(tmp.c_str(), dump_path);
+            }
         }
     }
 }
@@ -1178,6 +1213,27 @@ void ONScripter::runScript()
 int ONScripter::parseLine( )
 {
     if (debug_level > 0) utils::printInfo("ONScripter::Parseline %s\n", script_h.getStringBuffer());
+
+    /* ONS_TRACE_CMDS=1: log every script line the engine executes.  It has to
+     * sit above the early returns below (text, user functions via defsub, label
+     * lines) or a game that defines most of its commands with defsub -- which is
+     * what 07th's scripts do -- traces almost nothing.  Off unless requested. */
+    {
+        static int trace = -1;
+        if (trace < 0){ const char *e = getenv("ONS_TRACE_CMDS"); trace = (e && *e) ? 1 : 0; }
+        if (trace){
+            static FILE *tf = NULL;
+            if (!tf){
+                /* Relative to the engine's working directory (the game root):
+                 * an absolute /tmp path is refused here (ENOENT through the
+                 * sandbox), and this keeps the trace next to the game's own
+                 * stdout.txt / stderr.txt where it is easy to find. */
+                const char *tp = getenv("ONS_TRACE_CMDS");
+                tf = fopen(tp && *tp && strcmp(tp, "1") ? tp : "ons_trace.log", "w");
+            }
+            if (tf){ fprintf(tf, "%s\n", script_h.getStringBuffer()); fflush(tf); }
+        }
+    }
 
     const char *cmd = script_h.getStringBuffer();
     if      (cmd[0] == ';') return RET_CONTINUE;
@@ -1590,6 +1646,15 @@ int ONScripter::refreshMode()
 void ONScripter::quit()
 {
     saveAll();
+
+    /* Write the final frame while the surface is still alive, then drop the
+     * target: endCommand() exits right after quit(), and an atexit handler that
+     * touched the freed surface was a reproducible SIGSEGV (exit 139).  Writing
+     * here instead keeps the "last screen" guarantee for scripts that end. */
+    if (surface_dump_path && accumulation_surface)
+        SDL_SaveBMP(accumulation_surface, surface_dump_path);
+    surface_dump_path = NULL;
+
 
 #ifdef USE_CDROM
     if ( cdrom_info ){

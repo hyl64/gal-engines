@@ -23,6 +23,7 @@
 */
 #pragma once
 #ifdef USE_BUILTIN_LAYER_EFFECTS
+#include <string>
 #include "BaseReader.h"
 #include "AnimationInfo.h"
 
@@ -43,6 +44,14 @@ struct Layer {
   virtual char* message(const char *message, int &ret_int) = 0;
   virtual void refresh(SDL_Surface* surface, SDL_Rect &clip) = 0;
 };
+
+/* Implemented in builtin_dll/layer_wcmpg.cpp */
+Layer *createWcmpgLayer(int w, int h, const char *game_root);
+
+/* Implemented in builtin_dll/layer_stub.cpp: a layer that accepts the plugin's
+ * messages, draws nothing, and says so once.  Used for proprietary DLLs whose
+ * visuals we do not reproduce (anm / screen / NSFukuro in trt_trial). */
+Layer *createStubLayer(const char *dll_name, int w, int h);
 
 struct LayerInfo {
   Layer *handler;

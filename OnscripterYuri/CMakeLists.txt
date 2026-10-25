@@ -543,6 +543,8 @@ set(ONSYURI_CODE
     src/onsyuri/sjis2utf16.cpp
     src/onsyuri/renderer/gles_renderer.cpp
     src/onsyuri/builtin_dll/layer_oldmovie.cpp
+    src/onsyuri/builtin_dll/layer_wcmpg.cpp
+    src/onsyuri/builtin_dll/layer_stub.cpp
     src/onsyuri/builtin_dll/layer_snow.cpp
     src/onsyuri/builtin_dll/ONScripter_effect_cascade.cpp
     src/onsyuri/builtin_dll/ONScripter_effect_trig.cpp

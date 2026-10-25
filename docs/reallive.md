@@ -1,39 +1,34 @@
-# 引擎③ RealLive / RLVM：现状与可行性（只读评估，未改动）
+# 引擎③ RealLive → RLVM
 
-`rlvm/` 是上游源码（GPL-3+，作者说它能把 Kanon/Air/CLANNAD 等 Key 系游戏跑通）。
-**本会话从未改动这个目录**——它由另一个会话负责移植。
+上游 [rlvm](https://github.com/eglaysher/rlvm) 2015 年前后停止可构建；这里的分支把它
+在现代工具链上救活，并在 Apple Silicon 上跑通真实商业作品。
 
-## 现状（2026-10-25）
+## 现状（实测）
 
-- 目录里只有上游源码，**没有构建产物**（无 `build/`、无 `bin/rlvm`）
-- git 只有一个上游合并提交（`e38cda7`）
-- `gal engines` 里显示「未构建」
-
-## 构建它需要什么
-
-| 依赖 | 状态 |
+| 项 | 结果 |
 |---|---|
-| scons | ✅ 已装（4.11.1） |
-| boost ≥ 1.40 | ✅ 已装（1.92）——但老代码对新 boost 常需小修 |
-| **SDL 1.2** | ❌ 未装（系统只有 SDL2）；可装 `sdl12-compat`（SDL1.2 → SDL2 的桥） |
-| SDL_image / SDL_mixer 1.2 | 源码自带副本，也可用 brew 的 |
-| GLEW | ✅ 已装（2.3.1） |
-| libvorbis | ✅ 已装 |
+| 构建 | `scons --release --no-bundle`，Apple clang + Homebrew |
+| 单元测试 | **260/260 通过**（`build/rlvm_unittests`） |
+| 真实数据 | CLANNAD Full Voice（中文化，231 个剧本，4 GB 资源）：**231 个剧本全部解析** |
+| 渲染 | 标题画面、立绘、文字、中文台词、系统菜单 |
+| 音频 | BGM 可播放 |
+| 空闲开销 | 0.4% CPU、8.7 MB RSS（静态场景）|
+| 打包 | `rlvm.app` 自包含（6 个 dylib 带进 `Contents/Frameworks`）+ DMG |
 
-## 评估
+技术路线：SDL 1.2 API 由 **sdl12-compat** 提供，底层是 SDL3，渲染走 GL-on-Metal 桥。
+截图与性能记录在 [rlvm/README.md](../rlvm/README.md)、[rlvm/PERF.md](../rlvm/PERF.md)。
 
-**可行，但不是一条命令的事**：
+## 与构建有关的两个坑
 
-1. `scons --release` 的 SConscript 面向 Linux/旧 macOS，Apple Silicon 需要改架构与库路径
-2. SDL 1.2 → 用 `sdl12-compat` 桥接，事件/全屏/音频路径都要实测
-3. boost 1.92 与这份十多年前的代码，大概率要修几处头文件/接口
-4. 跑通之后还需要**一款 RealLive 游戏的真实数据**（Kanon/Air/CLANNAD 等），
-   这些是商业作品，本机没有
+1. **`--no-bundle`**：组装 `.app` 会用 `install_name_tool` 改写 Homebrew dylib 的 load
+   command，而 Xcode 15 的版本拒绝处理「已带签名」的库（`file not in an order that can
+   be processed`）。这是打包步骤，不是构建步骤，所以放在开关后面；`build-all.sh` 与 CI
+   用 `--no-bundle`，只验证可执行文件与单元测试。
+2. **单元测试要在自己的目录里跑**：它们按相对路径读 `test/` 下的夹具，换个 cwd 会大面积
+   失败——那不是回归。
 
-**所以即使构建成功，验收也要等游戏数据。**
+## 数据
 
-## 建议
-
-如果那个会话已经不活跃，我可以接手（大约需要：装 sdl12-compat → 调 SConscript →
-修 boost 兼容 → 构建 → 用 `gal` 接入）。但这会和那个会话冲突，
-**需要你确认再动 `rlvm/` 目录。**
+本仓库不含任何游戏数据。`build-all.sh` 对 RLVM 的检查是 260 个单元测试，**不需要游戏**；
+要跑真实作品，请自备一份含 `Seen.txt` 与 `Gameexe.ini` 的目录。获取与校验方式见
+[DATA.md](DATA.md)。

@@ -458,6 +458,21 @@ bool ONScripter::doEffect( EffectLink *effect, bool clear_dirty_region )
             effect_counter = effect_duration; // interrupted
     }
 
+    {
+        static int et = -1;
+        if (et < 0){ const char *e = getenv("ONS_TRACE_EFFECT"); et = (e && *e) ? 1 : 0; }
+        if (et){
+            static FILE *ef = NULL;
+            if (!ef) ef = fopen("ons_effect.log", "w");
+            if (ef){
+                fprintf(ef, "no=%d counter=%d dur=%d res=%d notimpl=%d\n",
+                        effect_no, effect_counter, effect_duration,
+                        effect_timer_resolution, (int)not_implemented);
+                fflush(ef);
+            }
+        }
+    }
+
     if ( effect_counter < effect_duration && effect_no != 1 ){
         if ( effect_no != 0 ) flush( REFRESH_NONE_MODE, NULL, false );
     

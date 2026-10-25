@@ -107,6 +107,9 @@ public:
     int rubyoffCommand();
     int roffCommand();
     int rmenuCommand();
+    int deletemenuCommand();   /* NScripter: drop the built-in right-click menu */
+    int errorsaveCommand();    /* NScripter: name the error-log file */
+    int fontCommand();         /* NScripter: select the text font */
     int returnCommand();
     int pretextgosubCommand();
     int pagetagCommand();
@@ -355,6 +358,7 @@ protected:
     /* Text related variables */
     bool render_font_outline;
     char *default_env_font;
+    char *error_save_file;      /* errorsave: where the original writes errors */
     int default_text_speed[3];
     struct Page{
         struct Page *next, *previous;

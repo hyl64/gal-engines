@@ -23,6 +23,7 @@
  */
 
 #include "ScriptParser.h"
+#include <stdlib.h>
 #include "Utils.h"
 #ifdef USE_BUILTIN_LAYER_EFFECTS
 #include "builtin_layer.h"
@@ -240,6 +241,13 @@ void ScriptParser::reset()
     effect_blank = 10;
     effect_skip_flag = 1;
     effect_cut_flag = false;
+    /* ONS_NO_EFFECT=1: make every transition instant.  Diagnostic for telling
+     * "the engine blended something it should not have" apart from "the art
+     * itself contains that", and a useful fast-forward mode for verification. */
+    {
+        const char *e = getenv("ONS_NO_EFFECT");
+        if (e && *e) effect_cut_flag = true;
+    }
 
     window_effect.effect = 1;
     window_effect.duration = 0;
@@ -268,6 +276,31 @@ int ScriptParser::openScript()
         script_h.cBR->open();
     }
     
+    /* ONS_PROBE_FILE=<name> / ONS_PROBE_OUT=<path>: dump one archive entry
+     * exactly as the reader hands it to the engine.  The only way to tell a
+     * broken archive index from a broken image decoder is to look at the bytes
+     * the engine itself gets.  Off unless the variable is set. */
+    {
+        const char *probe = getenv("ONS_PROBE_FILE");
+        if (probe && *probe){
+            size_t len = script_h.cBR->getFileLength(probe);
+            const char *outp = getenv("ONS_PROBE_OUT");
+            if (!outp || !*outp) outp = "/tmp/ons-probe.bin";
+            if (len == 0){
+                utils::printError("probe: the reader has no '%s'\n", probe);
+            } else {
+                unsigned char *buf = new unsigned char[len];
+                size_t got = script_h.cBR->getFile(probe, buf);
+                FILE *fp = fopen(outp, "wb");
+                if (fp){ fwrite(buf, 1, got, fp); fclose(fp); }
+                utils::printInfo("probe: '%s' %u bytes (read %u) -> %s, first 8: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                                 probe, (unsigned)len, (unsigned)got, outp,
+                                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+                delete[] buf;
+            }
+        }
+    }
+
     if ( script_h.openScript( archive_path ) ) return -1;
 
     screen_width  = script_h.screen_width;

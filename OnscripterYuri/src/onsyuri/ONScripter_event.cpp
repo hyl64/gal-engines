@@ -359,6 +359,23 @@ bool ONScripter::mouseMoveEvent( SDL_MouseMotionEvent *event )
 
     if ( event_mode & WAIT_BUTTON_MODE ){
         mouseOverCheck( current_button_state.x, current_button_state.y );
+        {
+            /* Which button, if any, is under the pointer?  Without this a title
+             * screen that ignores clicks is indistinguishable from one whose
+             * sprite buttons were never registered. */
+            static int bt = -1;
+            if (bt < 0){ const char *e = getenv("ONS_TRACE_BUTTONS"); bt = (e && *e) ? 1 : 0; }
+            if (bt){
+                static FILE *bf = NULL;
+                if (!bf) bf = fopen("ons_button.log", "w");
+                if (bf){
+                    fprintf(bf, "mouse %d,%d over=%d\n",
+                            current_button_state.x, current_button_state.y,
+                            current_over_button);
+                    fflush(bf);
+                }
+            }
+        }
         if (getmouseover_flag &&
             current_over_button >= getmouseover_lower &&
             current_over_button <= getmouseover_upper){
@@ -1084,6 +1101,12 @@ void ONScripter::timerEvent(bool init_flag)
         if (remaining_time < 0) remaining_time = 0;
     }
 
+    /* Layer movies must keep painting even while the script only waits for a
+     * click.  This has to sit ABOVE the frame-rate early-return below, or it
+     * never runs at all -- which is exactly why the pump had no effect the first
+     * time it was added. */
+    if (!(event_mode & WAIT_TIMER_MODE)) proceedLayerAnimation(current_time);
+
     //trick to increase frame rate
     if (remaining_time == 0 && !init_flag){
         SDL_Event event;
@@ -1161,11 +1184,62 @@ void ONScripter::runEventLoop()
     // movie: frames must be presented while the script sits waiting.  A 16 ms
     // timeout keeps the loop idle-cheap (it costs one wakeup per frame) and
     // gives the async player a place to draw on the main thread.
+    /* ONS_AUTOCLICK_MS=<ms>: push a left click every N ms while the engine is
+     * waiting.  Commercial games sit on a legal notice or a title screen until
+     * someone clicks, which makes headless verification impossible; this is the
+     * test hook that lets the engine walk through them by itself.  Off unless
+     * the variable is set. */
+    static Uint32 s_autoclick_ms = 0xFFFFFFFF;
+    static Uint32 s_last_autoclick = 0;
+    auto maybe_autoclick = [&]() {
+        if (s_autoclick_ms == 0xFFFFFFFF){
+            const char *e = getenv("ONS_AUTOCLICK_MS");
+            s_autoclick_ms = (e && *e) ? (Uint32)atoi(e) : 0;
+        }
+        if (!s_autoclick_ms) return;
+        const Uint32 now = SDL_GetTicks();
+        if (now - s_last_autoclick < s_autoclick_ms) return;
+        s_last_autoclick = now;
+        /* ONS_AUTOCLICK_X / ONS_AUTOCLICK_Y: where the synthetic click lands
+         * (screen coordinates of the game, default 320,320).  A title screen
+         * needs its own button hit; that is the point of the override. */
+        static int s_autoclick_x = -1, s_autoclick_y = -1;
+        if (s_autoclick_x < 0){
+            const char *ex = getenv("ONS_AUTOCLICK_X");
+            const char *ey = getenv("ONS_AUTOCLICK_Y");
+            s_autoclick_x = (ex && *ex) ? atoi(ex) : 320;
+            s_autoclick_y = (ey && *ey) ? atoi(ey) : 320;
+        }
+        /* A press alone is reported as a generic LCLICK: the engine resolves
+         * the button under the pointer in the *motion* handler, so a synthetic
+         * click has to move the pointer there first or it can never press a
+         * sprite button (the title screen ignored it for exactly this reason). */
+        SDL_Event motion, down, up;
+        SDL_zero(motion); SDL_zero(down); SDL_zero(up);
+        motion.type = SDL_MOUSEMOTION;
+        motion.motion.x = s_autoclick_x;
+        motion.motion.y = s_autoclick_y;
+        motion.motion.state = 0;
+        SDL_PushEvent(&motion);
+        down.type = SDL_MOUSEBUTTONDOWN;
+        down.button.button = SDL_BUTTON_LEFT;
+        down.button.state = SDL_PRESSED;
+        down.button.x = s_autoclick_x;
+        down.button.y = s_autoclick_y;
+        SDL_PushEvent(&down);
+        up = down;
+        up.type = SDL_MOUSEBUTTONUP;
+        up.button.state = SDL_RELEASED;
+        SDL_PushEvent(&up);
+    };
+
     while ( true ) {
         if ( SDL_WaitEventTimeout(&event, 16) == 0 ) {
             if ( videoIsAsyncPlaying() ) videoTickAsync();
+            maybe_autoclick();
             continue;
         }
+        maybe_autoclick();
         tmp_event = event; // fix android long click problem
 #if defined(USE_SMPEG)
         // required to repeat the movie

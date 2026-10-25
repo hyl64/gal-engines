@@ -26,6 +26,7 @@
 #include "ONScripter.h"
 #include "ScriptHandler.h"
 #include "Utils.h"
+#include <stdlib.h>
 
 #define ONS_LUA_HANDLER_PTR "ONS_LUA_HANDLER_PTR"
 #define INIT_SCRIPT "system.lua"
@@ -1125,6 +1126,65 @@ void LUAHandler::init(ONScripter *ons, ScriptHandler *sh,
     state = luaL_newstate();
     luaL_openlibs(state);
 
+    /* NScripter-era scripts were written against Lua 5.1.  The Homebrew Lua we
+     * link today is 5.4+, where several things they rely on are gone: math.log10
+     * was removed in 5.2, module() in 5.2, unpack() moved to table.unpack,
+     * loadstring() was renamed, getfenv/setfenv do not exist at all.
+     * A real commercial trial died at startup on exactly this:
+     *   lib/sound.lua:435: attempt to call a nil value (field 'log10')
+     * These shims are deliberately small: enough for the old scripts to load,
+     * not a full 5.1 emulation. */
+    if (luaL_dostring(state, R"LUA(
+if not math.log10 then
+  math.log10 = function(x) return math.log(x) / math.log(10) end
+end
+if not math.log2 then
+  math.log2 = function(x) return math.log(x) / math.log(2) end
+end
+if not math.pow then
+  math.pow = function(a, b) return a ^ b end
+end
+if not math.atan2 then
+  math.atan2 = function(y, x) return math.atan(y, x) end
+end
+if not table.unpack and unpack then table.unpack = unpack end
+if not unpack then unpack = table.unpack end
+if not loadstring then loadstring = load end
+if not io.write then io.write = function(...) return io.stdout:write(...) end end
+if not string.gfind then string.gfind = string.gmatch end
+-- module(): the old scripts call it to publish a global table.  No setfenv in
+-- 5.2+, so this is a flat version that is enough for NScripter's own libs.
+if not module then
+  function module(name)
+    local M = package.loaded[name]
+    if type(M) ~= "table" then M = {} ; package.loaded[name] = M end
+    local dot = name:match("^(.*%.)")
+    M._NAME = name
+    M._M = M
+    M._PACKAGE = dot or ""
+    if dot then _G[dot:sub(1, -2)] = _G[dot:sub(1, -2)] or {} end
+    _G[name] = M
+    local mt = getmetatable(M)
+    if not mt then mt = {} ; setmetatable(M, mt) end
+    mt.__index = _G
+    return M
+  end
+end
+if not getfenv then getfenv = function() return _G end end
+if not setfenv then
+  setfenv = function(f, t)
+    -- best effort: only the "set the environment of a 0-arg function" case
+    -- matters for these scripts, and there is no way to do it in 5.2+.  Keep
+    -- the function untouched rather than making it fail.
+    return f
+  end
+end
+)LUA") != 0){
+        utils::printError("lua: 5.1 compatibility shims failed to load: %s\n",
+                          lua_tostring(state, -1));
+        lua_pop(state, 1);
+    }
+
 #if LUA_VERSION_NUM >= 502
     lua_pushglobaltable(state);
     luaL_setfuncs(state, lua_lut, 0);
@@ -1194,8 +1254,17 @@ void LUAHandler::addCallback(const char *label)
         callback_state[LUA_TAG] = true;
     if (strcmp(label, "text0") == 0)
         callback_state[LUA_TEXT0] = true;
-    if (strcmp(label, "text") == 0)
-        callback_state[LUA_TEXT] = true;
+    if (strcmp(label, "text") == 0){
+        /* ONS_NO_LUA_TEXT=1 keeps the engine's own text layout instead of
+         * handing each line to the game's Lua renderer.  Some titles put their
+         * whole text engine in Lua and then only ask `print` to show it, which
+         * leaves nothing for the engine to draw; this switch is the way to let
+         * the engine lay the line out itself. */
+        static int off = -1;
+        if (off < 0){ const char *e = getenv("ONS_NO_LUA_TEXT"); off = (e && e[0] == '1') ? 1 : 0; }
+        if (!off) callback_state[LUA_TEXT] = true;
+        return;
+    }
     if (strcmp(label, "animation") == 0)
         callback_state[LUA_ANIMATION] = true;
     if (strcmp(label, "close") == 0)
@@ -1215,6 +1284,14 @@ void LUAHandler::addCallback(const char *label)
 int LUAHandler::callFunction(bool is_callback, const char *cmd, void *data)
 {
     char cmd2[64];
+    /* ONS_LUA_TRACE=1: every Lua-backed command and callback the engine runs.
+     * A game whose own text system lives in Lua is otherwise a black box: a
+     * command that never arrives looks exactly like one that does nothing. */
+    {
+        static int trace = -1;
+        if (trace < 0){ const char *e = getenv("ONS_LUA_TRACE"); trace = (e && *e) ? 1 : 0; }
+        if (trace) fprintf(stderr, "[lua] %s %s\n", is_callback ? "callback" : "command", cmd);
+    }
     
     if (is_callback)
         sprintf(cmd2, "NSCALL_%s", cmd);

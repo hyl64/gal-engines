@@ -1,0 +1,23 @@
+# Vendored engines: which commit each copy came from.
+#
+# This repository carries copies of six repositories.  Each copy is taken at a
+# fixed commit so that a checkout builds the same thing twice, and so that
+# "which version is this?" has an answer.
+#
+# Every entry was built here before it was pinned.  Bump one deliberately:
+#
+#     ./scripts/sync-engines.sh --bump artemis
+#     ./build-all.sh && ./build-all.sh --check --data <dir>
+#     git add -A && git commit        # lock file and engine copy move together
+#
+# format: <name> <directory> <commit> <source repository> [note]
+#
+# The source repository column is what sync-engines.sh reads; paths beginning
+# with ~ are resolved against $HOME.
+
+nscripter  OnscripterYuri  a4435f34f38ea626e50a57290927416f30faeeca  ~/Documents/gal-engines/OnscripterYuri
+kirikiri    kirikiroid2-mac        a78bd479e7907c7c02d153348646eab1ac1c1eff  ~/Documents/gal-engines/kirikiroid2-mac
+reallive    rlvm                   8e2adc5ec1d6c92d1c4fcc3d66f88f690024c9da  ~/Documents/rlvm
+bgi         openbgi/openbgi-src    6a620c57935cd34cb9f8f41aaa5e3e350033332f  ~/Documents/gal-engines/openbgi/openbgi-src
+artemis  artemis  1e3ae02f99c9503a1dc7b3c6ff82e9ae8babcf85  ~/Documents/gal-engines/artemis  #  later  commits  do  not  build  yet
+gal         gal                    549ee1baacce2b9147885cec5a2fbe602cbd4dbd  ~/Documents/gal-engines/gal

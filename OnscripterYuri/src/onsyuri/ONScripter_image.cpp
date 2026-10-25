@@ -23,6 +23,20 @@
  */
 
 #include "ONScripter.h"
+/* ONS_TRACE_CHAIN=1: one counter per step of the layer-movie paint path.
+ * Five rounds of guessing which link was broken; this answers it in one run. */
+static void chainProbe(const char *what, long a = -1, long b = -1)
+{
+    static int on = -1;
+    if (on < 0){ const char *e = getenv("ONS_TRACE_CHAIN"); on = (e && *e) ? 1 : 0; }
+    if (!on) return;
+    static FILE *f = NULL;
+    if (!f) f = fopen("ons_chain.log", "w");
+    if (!f) return;
+    fprintf(f, "%s %ld %ld\n", what, a, b);
+    fflush(f);
+}
+
 #include <new>
 #include <algorithm>
 #include "resize_image.h"
@@ -706,8 +720,41 @@ void ONScripter::makeMonochromeSurface( SDL_Surface *surface, SDL_Rect &clip )
     SDL_UnlockSurface( surface );
 }
 
+/* ONS_DUMP_TEXT=<file.bmp>: write the text layer on its own.  "the window is
+ * there but nothing is written in it" is either an empty text layer or a text
+ * layer that something covers, and only the layer itself can tell them apart.
+ * Rate limited like ONS_SURFACE_DUMP; off unless the variable is set. */
+static void dumpTextLayer(SDL_Surface *text_surface, int refresh_mode, int display_mode)
+{
+    extern int gTextDebugInfo;
+    const char *path = getenv("ONS_DUMP_TEXT");
+    static Uint32 last = 0;
+    const Uint32 now = SDL_GetTicks();
+    if (now - last < 400) return;
+    last = now;
+    /* how much the text layer actually holds: a transparent copy is the
+     * difference between "the text never got here" and "it is here but not
+     * blended" */
+    long ink = -1;
+    if (text_surface && text_surface->format->BytesPerPixel == 4){
+        ink = 0;
+        SDL_LockSurface(text_surface);
+        const uint8_t *p = (const uint8_t*)text_surface->pixels;
+        for (int y = 0; y < text_surface->h; y += 4)
+            for (int x = 0; x < text_surface->w; x += 4)
+                if (p[(size_t)y * text_surface->pitch + (size_t)x * 4 + 3]) ink++;
+        SDL_UnlockSurface(text_surface);
+    }
+    fprintf(stderr, "[textlayer] %s %dx%d ink=%ld refresh=%x display=%d dbg=%d\n",
+            text_surface ? "surface" : "NULL",
+            text_surface ? text_surface->w : 0, text_surface ? text_surface->h : 0,
+            ink, refresh_mode, display_mode, gTextDebugInfo);
+    if (path && *path && text_surface) SDL_SaveBMP(text_surface, path);
+}
+
 void ONScripter::refreshSurface( SDL_Surface *surface, SDL_Rect *clip_src, int refresh_mode )
 {
+    chainProbe("refreshSurface", (long)refresh_mode, clip_src?(long)clip_src->w:-1L);
     if (refresh_mode == REFRESH_NONE_MODE) return;
 
     SDL_Rect clip;
@@ -725,7 +772,19 @@ void ONScripter::refreshSurface( SDL_Surface *surface, SDL_Rect *clip_src, int r
         else
             top = z_order;
         for ( i=MAX_SPRITE_NUM-1 ; i>top ; i-- ){
-            if ( sprite_info[i].image_surface && sprite_info[i].visible )
+            /* A layer sprite ('lsp N,"*10"') has no image of its own: the layer
+             * plugin paints into the surface instead.  setupAnimationInfo()
+             * deliberately leaves image_surface NULL for TRANS_LAYER, so the old
+             * 'image_surface && visible' test skipped exactly the sprites that
+             * carry a movie -- the decoder ran, frames were published and
+             * consumed, and none of them ever reached the screen. */
+#ifdef USE_BUILTIN_LAYER_EFFECTS
+            const bool drawable = sprite_info[i].image_surface != NULL ||
+                                  sprite_info[i].trans_mode == AnimationInfo::TRANS_LAYER;
+#else
+            const bool drawable = sprite_info[i].image_surface != NULL;
+#endif
+            if ( drawable && sprite_info[i].visible )
                 drawTaggedSurface( surface, &sprite_info[i], clip );
         }
     }
@@ -803,6 +862,8 @@ void ONScripter::refreshSurface( SDL_Surface *surface, SDL_Rect *clip_src, int r
         else if ( clickstr_state == CLICK_NEWPAGE )
             drawTaggedSurface( surface, &cursor_info[1], clip );
     }
+
+    dumpTextLayer( text_info.image_surface, refresh_mode, display_mode );
 
     if (show_dialog_flag)
         drawTaggedSurface( surface, &dialog_info, clip );

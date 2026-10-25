@@ -23,6 +23,7 @@
  */
 
 #include "ONScripter.h"
+#include <stdlib.h>
 #include "coding2utf16.h"
 #include "Utils.h"
 
@@ -72,8 +73,32 @@ void ONScripter::shiftHalfPixelY(SDL_Surface *surface)
     SDL_UnlockSurface( surface );
 }
 
+int gTextDebugInfo = 0;
+
 void ONScripter::drawGlyph( SDL_Surface *dst_surface, FontInfo *info, SDL_Color &color, char* text, int xy[2], AnimationInfo *cache_info, SDL_Rect *clip, SDL_Rect &dst_rect )
 {
+    /* A FontInfo that lost its size (a reset that rebuilt it, a script that
+     * never set one) gives every glyph the same position: the screen column is
+     * xy[0] * pitch / 2, so a zero pitch draws the whole line on one pixel and
+     * the text is invisible although it is "drawn".  Take the real metrics from
+     * the font that is open - the only values that cannot be zero - and say so
+     * once. */
+    if (info->pitch_xy[0] <= 0 || info->font_size_xy[0] <= 0 || info->font_size_xy[0] < 8){
+        TTF_Font *f = (TTF_Font*)info->ttf_font[0];
+        if (f){
+            const int h = TTF_FontHeight(f);
+            if (info->font_size_xy[0] < 8) info->font_size_xy[0] = h;
+            if (info->font_size_xy[1] < 8) info->font_size_xy[1] = h;
+            if (info->pitch_xy[0] < 8) info->pitch_xy[0] = h;
+            if (info->pitch_xy[1] < 8) info->pitch_xy[1] = h + 2;
+            static int told = 0;
+            if (!told){
+                told = 1;
+                utils::printInfo("text: the font had no size/pitch; using the face's %d px\n", h);
+            }
+        }
+    }
+
     unsigned short unicode;
     if (IS_TWO_BYTE(text[0])){
         if(coding2utf16->force_utf8) {
@@ -101,6 +126,21 @@ void ONScripter::drawGlyph( SDL_Surface *dst_surface, FontInfo *info, SDL_Color 
     //utils::printInfo("min %d %d %d %d %d %d\n", minx, maxx, miny, maxy, advanced,TTF_FontAscent((TTF_Font*)info->ttf_font[0])  );
 
     static SDL_Color fcol={0xff, 0xff, 0xff}, bcol={0, 0, 0};
+    /* ONS_TEXT_DEBUG=1: the glyph, its bytes and the font, for a crash inside
+     * SDL_ttf/HarfBuzz.  "which character, which font" is the whole question
+     * there, and the crash handler cannot tell us. */
+    {
+        static int dbg = -1;
+        if (dbg < 0){ const char *e = getenv("ONS_TEXT_DEBUG"); dbg = (e && *e) ? 1 : 0; }
+        if (dbg)
+            fprintf(stderr, "[glyph] u+%04x info=%p (sentence_font=%p%s) tate=%d size=%d,%d dst=%s xy=%d,%d\n",
+                    unicode, (void*)info, (void*)&sentence_font,
+                    info == &sentence_font ? " same" : " other",
+                    info->getTateyokoMode(),
+                    (int)info->font_size_xy[0], (int)info->font_size_xy[1],
+                    dst_surface == accumulation_surface ? "accum" : (dst_surface == text_info.image_surface ? "text_info" : "other"),
+                    xy[0], xy[1]);
+    }
     SDL_Surface *tmp_surface = TTF_RenderGlyph_Shaded((TTF_Font*)info->ttf_font[0], unicode, fcol, bcol);
     
     SDL_Color scolor = {0, 0, 0};
@@ -688,6 +728,22 @@ int ONScripter::textCommand()
 
     char *buf = script_h.getStringBuffer();
 
+    /* ONS_TEXT_DEBUG=1: what the engine is asked to display.  A game whose
+     * text system is Lua (this one is) can look like "nothing is printed" when
+     * the callback hands over an empty string, and only this line tells the
+     * difference. */
+    {
+        static int dbg = -1;
+        if (dbg < 0){ const char *e = getenv("ONS_TEXT_DEBUG"); dbg = (e && *e) ? 1 : 0; }
+        if (dbg){
+            const char *p = buf + string_buffer_offset;
+            fprintf(stderr, "[text] font=%p size=%d,%d nbytes=%d:", (void*)&sentence_font, (int)sentence_font.font_size_xy[0],
+                    (int)sentence_font.font_size_xy[1], (int)strlen(p));
+            for (int i = 0; i < 24 && p[i]; i++) fprintf(stderr, " %02x", (unsigned char)p[i]);
+            fprintf(stderr, "\n");
+        }
+    }
+
     bool tag_flag = true;
     if (buf[string_buffer_offset] == '[')
         string_buffer_offset++;
@@ -749,6 +805,23 @@ int ONScripter::textCommand()
         line_enter_status = 1;
 
         return RET_CONTINUE;
+    }
+
+    /* A sentence font with no size turns every glyph into the same pixel: the
+     * text is laid out at a zero pitch and disappears under itself.  A script
+     * can leave the size at 0 (a reset that resets the font, a missing init
+     * call); falling back to the default is always better than an invisible
+     * line, and it is reported once so the cause stays visible. */
+    if (sentence_font.font_size_xy[0] <= 0 || sentence_font.font_size_xy[1] <= 0){
+        sentence_font.font_size_xy[0] = DEFAULT_FONT_SIZE;
+        sentence_font.font_size_xy[1] = DEFAULT_FONT_SIZE;
+        sentence_font.pitch_xy[0] = DEFAULT_FONT_SIZE;
+        sentence_font.pitch_xy[1] = 2 + DEFAULT_FONT_SIZE;
+        static int reported = 0;
+        if (!reported){
+            reported = 1;
+            utils::printInfo("text: the sentence font had no size; using %d px\n", DEFAULT_FONT_SIZE);
+        }
     }
 
     enterTextDisplayMode();

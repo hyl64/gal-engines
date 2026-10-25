@@ -23,6 +23,7 @@
  */
 
 #include "ONScripter.h"
+#include <stdlib.h>
 #include "video_player.h"
 #if defined(LINUX) || defined(MACOSX) || defined(IOS)
 #include <sys/types.h>
@@ -309,8 +310,14 @@ int ONScripter::texecCommand()
 
 int ONScripter::tateyokoCommand()
 {
-    sentence_font.setTateyokoMode( script_h.readInt() );
-    
+    /* NScripter's `tateyoko` takes 0 (horizontal) or 1 (vertical); the scripts
+     * are written for the horizontal default.  A value that is neither is not a
+     * request for vertical text, so the default stands - previously any stray
+     * value (or a mis-read operand) left the whole scenario in one column. */
+    const int mode = script_h.readInt();
+    sentence_font.setTateyokoMode(mode == 1 ? 1 : 0);  // FontInfo::TATE_MODE : YOKO_MODE
+    if (getenv("ONS_TEXT_TRACE"))
+        fprintf(stderr, "[tateyoko] %d -> %d\n", mode, sentence_font.getTateyokoMode());
     return RET_CONTINUE;
 }
 
@@ -635,6 +642,25 @@ int ONScripter::spbtnCommand()
          sprite_info[ sprite_no ].trans_mode == AnimationInfo::TRANS_STRING )
         button->image_rect = button->select_rect = sprite_info[ sprite_no ].pos;
 
+    {
+        /* ONS_TRACE_BUTTONS=1: report every registered sprite button and where
+         * it actually is.  A title screen that ignores clicks looks identical
+         * whether the buttons are at unexpected coordinates or missing. */
+        const char *e = getenv("ONS_TRACE_BUTTONS");
+        if (e && *e){
+            static FILE *bf = NULL;
+            if (!bf) bf = fopen("ons_button.log", "w");
+            if (bf){
+                fprintf(bf, "spbtn no=%d sprite=%d rect=%d,%d %dx%d surface=%p screen=%dx%d\n",
+                        no, sprite_no, button->image_rect.x, button->image_rect.y,
+                        button->image_rect.w, button->image_rect.h,
+                        (void*)sprite_info[sprite_no].image_surface,
+                        screen_width, screen_height);
+                fflush(bf);
+            }
+        }
+    }
+
     return RET_CONTINUE;
 }
 
@@ -666,8 +692,38 @@ void ONScripter::setwindowCore()
     sentence_font.top_xy[1] = script_h.readInt();
     sentence_font.num_xy[0] = script_h.readInt();
     sentence_font.num_xy[1] = script_h.readInt();
+    /* The window rectangle below goes through scalePosXY, but the text origin
+     * was used raw: a game whose layout is 1920x1080 on a 1024x576 screen ended
+     * up with its text at y = 754, i.e. below the screen, and nothing showed.
+     * Both coordinates are in the script's space and take the same ratio. */
+    if (screen_ratio1 != screen_ratio2){
+        sentence_font.top_xy[0] = sentence_font.top_xy[0] * screen_ratio1 / screen_ratio2;
+        sentence_font.top_xy[1] = sentence_font.top_xy[1] * screen_ratio1 / screen_ratio2;
+    }
     sentence_font.font_size_xy[0] = script_h.readInt();
     sentence_font.font_size_xy[1] = script_h.readInt();
+    /* `textwindow` / `setwindow` lay their text out horizontally; vertical text
+     * is a separate command (`tateyoko`) and a script that wants it says so.
+     * Without this a window set up here kept whatever mode a sprite-tag parse
+     * had left behind, and the line ran down one column. */
+    sentence_font.setTateyokoMode(0);
+    /* A text window with a one-pixel font draws every glyph inside a single
+     * pixel: it is never what a script means.  A game can reach this by putting
+     * its own size variable in the command before it was initialised (this one
+     * does - `setwindow3 ... TEX.FONTSZ ...` with TEX.FONTSZ still 1), and then
+     * the whole scenario is invisible while everything else looks fine.  Keep
+     * the default size in that case. */
+    if (sentence_font.font_size_xy[0] < 8 || sentence_font.font_size_xy[1] < 8){
+        static int reported = 0;
+        if (!reported){
+            reported = 1;
+            utils::printInfo("setwindow: a %dx%d px font is not a size; using %d px\n",
+                             (int)sentence_font.font_size_xy[0], (int)sentence_font.font_size_xy[1],
+                             DEFAULT_FONT_SIZE);
+        }
+        sentence_font.font_size_xy[0] = DEFAULT_FONT_SIZE;
+        sentence_font.font_size_xy[1] = DEFAULT_FONT_SIZE;
+    }
     sentence_font.pitch_xy[0] = script_h.readInt() + sentence_font.font_size_xy[0];
     sentence_font.pitch_xy[1] = script_h.readInt() + sentence_font.font_size_xy[1];
     sentence_font.wait_time = script_h.readInt();
@@ -1887,7 +1943,21 @@ int ONScripter::loadgameCommand()
 
     int fadeout = mp3fadeout_duration;
     mp3fadeout_duration = 0; //don't use fadeout during a load
+    /* NOTE: this reads oddly -- loadSaveFile2() ends with a single 'return 0' --
+     * but flipping it to '!= 0' BREAKS loading: the branch taken here is also what
+     * lets the script continue past loadgame instead of jumping to the restored
+     * position, and reverting the flip restores round-trip operation.  Verified by
+     * harness/run_savetest.sh failing with 'variable state: none' when flipped.
+     * Left as-is; the semantics are not what the return values suggest. */
     if ( !loadSaveFile( no ) ){
+        /* This branch is reached on a SUCCESSFUL load too (see the note above), so
+         * it must not claim failure.  Report the event without judging it; the
+         * wording used to say 'cannot load save slot N' on every working load,
+         * which sent a whole round of investigation after a bug that was not there. */
+        utils::printInfo("loadgame: took the post-load branch for slot %d "
+                         "(savedir '%s', save_dir '%s')\n", no,
+                         save_dir_envdata ? save_dir_envdata : "<default>",
+                         save_dir ? save_dir : "<default>");
         dirty_rect.fill( screen_width, screen_height );
         flush( refreshMode() );
 
@@ -2784,9 +2854,21 @@ int ONScripter::exec_dllCommand()
         return RET_CONTINUE;
     }
 
+    /* dll.txt describes each plugin's return values; it is an author-side file
+     * and a lot of games simply do not ship it.  NScripter on Windows would
+     * load the real DLL instead.  Missing it is not fatal -- return a defined
+     * default and say so once, instead of printing on every exec_dll call
+     * (trt_trial calls it 20+ times and the log became unreadable). */
+    static bool dll_txt_missing_reported = false;
     FILE *fp;
     if ( ( fp = fopen( dll_file, "r" ) ) == NULL ){
-        utils::printError( "Cannot open file [%s] while reading %s\n", dll_file, dll_name );
+        if (!dll_txt_missing_reported){
+            dll_txt_missing_reported = true;
+            utils::printInfo( "exec_dll: [%s] not present; DLL calls return defaults\n",
+                              dll_file );
+        }
+        setStr( &getret_str, NULL );
+        getret_int = 0;
         return RET_CONTINUE;
     }
 

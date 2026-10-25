@@ -4,3 +4,4 @@ build-t3/
 mpvdev/out/
 mpvdev/mpvdev_harness
 mpvdev/fixtures/
+build-dbg/

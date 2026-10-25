@@ -1,3 +1,5 @@
+[![build](https://github.com/hyl64/gal-engines/actions/workflows/build.yml/badge.svg)](https://github.com/hyl64/gal-engines/actions/workflows/build.yml)
+
 # gal-engines — 在 M1 Mac 上跑 galgame
 
 五款主流 galgame 引擎的 macOS arm64 原生适配，加一个统一的管理器。
@@ -46,9 +48,9 @@ gal-engines/
 | ② KiriKiri | `testdata/kag3-sample`（KAG3 3.32 官方框架 + first.ks） | **可以运行** |
 | ④ Ethornell | `testdata/bgi-trial`（《遥か碧の花嫁に》官方体验版） | **可以运行** |
 | ⑤ Artemis | 三套真实作品（见下） | **归档层可以读**，画面层未通 |
-| ③ RealLive | — | 另一会话，无产物 |
+| ③ RealLive | CLANNAD Full Voice（231 剧本，4 GB） | **260/260 单测；标题/立绘/中文台词/系统菜单** |
 
-**三个引擎在真实数据上通过验收**，引擎⑤ 从零实现且已接手三套真实数据（归档层通过，画面层未通）。
+**四个引擎在真实数据上通过验收**；引擎⑤ 从零实现，已接手三套真实作品。
 
 ## 各引擎的证据
 
@@ -122,8 +124,8 @@ gal-engines/
 
 Artemis 没有开源实现，全部自己写。**2026-10-25 起，这套实现有了真实作品数据**：
 三套官方/作者公开免费发布的内容，来源、哈希与复核记录在
-[artemis/DATA_SOURCES.md](artemis/DATA_SOURCES.md)，独立验收脚本是
-[verify-artemis-real.py](verify-artemis-real.py)（每次改动都该跑一遍）。
+[artemis/DATA_SOURCES.md](artemis/DATA_SOURCES.md)，实跑数据见
+[bench/artemis/RESULTS.md](bench/artemis/RESULTS.md)。
 
 | 数据 | 形态 | 归档实测 |
 |---|---|---|
@@ -222,15 +224,15 @@ SDL_VIDEODRIVER=dummy ./build/agame --script scenario/scene.iet \
 - **跨卷查找**：只有 Qruppo 的 `.060` 单卷，无多卷数据可测。
 - **`.ast` 的外置台词**（`lang_NNNNN`）：语料没带对应 lang 文件，能识别但打不开。
 
-完整清单与证据命令见 [artemis/docs/REALDATA.md](artemis/docs/REALDATA.md)，
-符合性矩阵见 [ARTEMIS_CONFORMANCE.md](ARTEMIS_CONFORMANCE.md)。
+完整清单与证据命令见 [artemis/DATA_SOURCES.md](artemis/DATA_SOURCES.md)，
+实跑数据见 [bench/artemis/RESULTS.md](bench/artemis/RESULTS.md)。
 
 ### ③ RealLive — 不在本会话
 `rlvm/` 是上游源码，由另一个会话负责移植，目前没有产物。
 
 ## 构建
 
-完整复现步骤见 [BUILD.md](BUILD.md)，实测记录见 [REBUILD.md](REBUILD.md)。
+完整复现步骤见 [docs/BUILD.md](docs/BUILD.md)，实测记录见 [docs/REBUILD.md](docs/REBUILD.md)。
 
 一条命令构建全部并自检：
 

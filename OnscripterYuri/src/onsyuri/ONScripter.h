@@ -433,6 +433,8 @@ private:
     void resetSentenceFont();
     void flush( int refresh_mode, SDL_Rect *rect=NULL, bool clear_dirty_flag=true, bool direct_flag=false );
     void flushDirect( SDL_Rect &rect, int refresh_mode );
+    static char *surface_dump_path;      // ONS_SURFACE_DUMP
+    static void dumpSurfaceAtExit();
     #ifdef USE_SMPEG
     void flushDirectYUV(SDL_Overlay *overlay);
     #endif
@@ -486,6 +488,7 @@ private:
     
     int  calcDurationToNextAnimation();
     void proceedAnimation(int current_time);
+    void proceedLayerAnimation(int current_time);
     void setupAnimationInfo(AnimationInfo *anim, FontInfo *info=NULL);
     void parseTaggedString(AnimationInfo *anim );
     void drawTaggedSurface(SDL_Surface *dst_surface, AnimationInfo *anim, SDL_Rect &clip);

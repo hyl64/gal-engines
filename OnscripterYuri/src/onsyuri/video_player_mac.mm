@@ -43,9 +43,13 @@
 #include <math.h>
 #include <new>
 #include <string>
+#include <sys/stat.h>
+#include <ctype.h>
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
 #include <cstdint>
 
 #include <SDL2/SDL.h>
@@ -812,8 +816,401 @@ extern "C" int avfTickAsync(const video_host *host)
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* Decoder side of the wcmpg layer plugin.                             */
+/*                                                                     */
+/* Shares the async player's mechanism: a worker thread decodes and     */
+/* publishes the newest frame into a slot under a mutex, the main thread */
+/* pulls it.  Differences from the async player:                        */
+/*   - open() starts paused (the script decides when to play)           */
+/*   - play()/pause() gate the decode loop                              */
+/*   - no host callback: the Layer::refresh() blits the frame itself    */
+/* ------------------------------------------------------------------ */
+static unsigned crc32Of(const char *text)
+{
+    unsigned c = 0xffffffffu;
+    for (const unsigned char *p = (const unsigned char*)text; p && *p; p++){
+        c ^= *p;
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1u)));
+    }
+    return ~c;
+}
+
+/* Where an archive entry is staged for AVFoundation, which wants a URL.  The
+ * name carries a hash so two entries that differ only in path do not collide. */
+static std::string layerCachePath(const char *entry_name)
+{
+    const char *tmp = getenv("TMPDIR");
+    std::string dir = tmp && *tmp ? tmp : "/tmp";
+    if (dir[dir.size()-1] != '/') dir += "/";
+    dir += "onsyuri-movie";
+    mkdir(dir.c_str(), 0700);
+    std::string base;
+    for (const char *p = entry_name; p && *p; p++)
+        base += (isalnum((unsigned char)*p) ? *p : '_');
+    if (base.size() > 80) base = base.substr(base.size() - 80);
+    /* keep the real extension: AVFoundation picks the demuxer from it, and a
+     * MPEG-1 program stream named .mp4 gets "no video track" */
+    std::string ext = ".mpg";
+    const char *dot = strrchr(entry_name, '.');
+    if (dot && strlen(dot) <= 6) ext = dot;
+    char suffix[64];
+    snprintf(suffix, sizeof suffix, "_%08x", crc32Of(entry_name));
+    return dir + "/" + base + suffix + ext;
+}
+
+struct LayerPlayer {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::vector<uint8_t> frame;      // the newest decoded frame
+    int w = 0, h = 0;
+    uint64_t serial = 0;
+    uint64_t consumed = 0;
+    bool open = false;               // a worker exists / the file was accepted
+    bool paused = true;              // the script drives this: open starts paused
+    bool loop = false;               // setloop/N: read by the worker every pass
+    bool stop_requested = false;
+    bool eof = false;
+    bool paused_restart = false;     // play() after EOF: start another pass
+    std::thread worker;
+};
+
+static LayerPlayer g_layer;
+static std::vector<uint8_t> g_layer_snapshot;   // main-thread copy
+
+/* AVFoundation is only reliable with ONE asset reader alive at a time: the
+ * title screen drives a movie layer while `mpegplay` may still be finishing
+ * the previous one, and two readers on two threads crashed inside
+ * -[AVAssetReaderOutput copyNextSampleBuffer].  Every reader in this file takes
+ * this lock for its whole life. */
+static std::mutex g_avfReaderMutex;
+
+/* Everything AVFoundation touches lives on this one thread: the asset, the
+ * reader and its output are created and released here and nowhere else.
+ * (Flushing a decoder from another thread - what the first cut did when the
+ * script sent setloop - is a SIGBUS inside FigMediaProcessorFlush, reproducibly.)
+ * The loop flag and the pause flag are read under the mutex, so setloop /
+ * pause / play never have to restart the reader. */
+static void layerDecodeLoop(NSString *nspath)
+{
+    @autoreleasepool {
+        std::unique_lock<std::mutex> readerLock(g_avfReaderMutex, std::defer_lock);
+        NSURL *url = [NSURL fileURLWithPath:nspath];
+        AVURLAsset *asset =
+            [AVURLAsset URLAssetWithURL:url
+                               options:@{ AVURLAssetPreferPreciseDurationAndTimingKey : @YES }];
+        AVAssetTrack *vtrack = nil;
+        for (AVAssetTrack *t in [asset tracksWithMediaType:AVMediaTypeVideo]){
+            if (!vtrack) vtrack = t;
+        }
+        if (!vtrack || CMTIME_IS_INVALID(asset.duration)){
+            utils::printInfo("wcmpg: no video track in %s\n", [nspath UTF8String]);
+            std::lock_guard<std::mutex> lk(g_layer.mtx);
+            g_layer.open = false;
+            g_layer.eof = true;
+            g_layer.cv.notify_all();
+            return;
+        }
+
+        NSDictionary *oopts = @{
+            (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferIOSurfacePropertiesKey : @{}
+        };
+
+        long last_reader_status = -1;
+        while (true){
+            @autoreleasepool {                     // one pass over the file
+                {
+                    std::unique_lock<std::mutex> lk(g_layer.mtx);
+                    if (g_layer.stop_requested) return;
+                }
+                readerLock.lock();
+                AVAssetReader *reader = [AVAssetReader assetReaderWithAsset:asset error:nil];
+                if (!reader){ readerLock.unlock(); break; }
+                reader.timeRange = CMTimeRangeMake(CMTimeMake(0, 1), asset.duration);
+                AVAssetReaderTrackOutput *trackOut =
+                    [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:vtrack
+                                                               outputSettings:oopts];
+                if (!trackOut || ![reader canAddOutput:trackOut]){ readerLock.unlock(); break; }
+                [reader addOutput:trackOut];
+                if (![reader startReading]){
+                    /* A second startReading on a reader that a previous pass
+                     * cancelled does not reliably work, and 'break' here used to
+                     * end the whole worker -- which is exactly how a looping
+                     * clip stopped after one pass.  Report it instead of leaving
+                     * the trace silent, and let the loop retry with a fresh
+                     * reader next time round. */
+                    utils::printInfo("wcmpg: startReading failed on this pass "
+                                     "(status %ld); %s\n", (long)[reader status],
+                                     g_layer.loop ? "retrying" : "giving up");
+                    readerLock.unlock();
+                    if (!g_layer.loop) break;
+                    SDL_Delay(50);
+                    continue;
+                }
+
+                const double t0 = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()));
+                bool eof = false;
+                while (!eof){
+                    {
+                        std::unique_lock<std::mutex> lk(g_layer.mtx);
+                        if (g_layer.stop_requested) return;   // readerLock releases
+                        /* wait while the script has the layer paused; `close`
+                         * and `stop` wake us through the same variable */
+                        while (g_layer.paused && !g_layer.stop_requested && g_layer.open)
+                            g_layer.cv.wait_for(lk, std::chrono::milliseconds(50));
+                        if (g_layer.stop_requested || !g_layer.open) return;
+                    }
+                    @autoreleasepool {
+                        CMSampleBufferRef sb = [trackOut copyNextSampleBuffer];
+                        if (!sb){ eof = true; break; }
+                        CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sb);
+                        CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
+                        if (pb &&
+                            CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly)
+                                == kCVReturnSuccess){
+                            const size_t w = CVPixelBufferGetWidth(pb);
+                            const size_t h = CVPixelBufferGetHeight(pb);
+                            const uint8_t *src = (const uint8_t*)CVPixelBufferGetBaseAddress(pb);
+                            const size_t spitch = CVPixelBufferGetBytesPerRow(pb);
+                            if (src){
+                                std::lock_guard<std::mutex> lk(g_layer.mtx);
+                                const size_t need = w * h * 4;
+                                if (g_layer.frame.size() != need){
+                                    g_layer.frame.resize(need);
+                                    g_layer.w = (int)w;
+                                    g_layer.h = (int)h;
+                                }
+                                for (size_t y = 0; y < h; y++)
+                                    memcpy(g_layer.frame.data() + y * w * 4,
+                                           src + y * spitch, w * 4);
+                                g_layer.serial++;
+                                {
+                                    /* First publish only: report the actual pixel
+                                     * bytes.  'black on screen' could be a decode
+                                     * problem, a copy problem or a blit problem,
+                                     * and this tells them apart in one line. */
+                                    static int seen = 0;
+                                    static int on = -1;
+                                    if (on < 0){ const char *e = getenv("ONS_TRACE_LAYER_FRAME"); on = (e && *e) ? 1 : 0; }
+                                    if (on && seen++ < 2){
+                                        const uint8_t *q = g_layer.frame.data() + (h/2)*w*4 + (w/2)*4;
+                                        FILE *df = fopen("ons_layercolor.log", "a");
+                                        if (df){
+                                            fprintf(df, "publish %zux%zu centre=%02x%02x%02x "
+                                                        "serial=%llu consumed=%llu framesz=%zu\n",
+                                                    w, h, q[0], q[1], q[2],
+                                                    (unsigned long long)g_layer.serial,
+                                                    (unsigned long long)g_layer.consumed,
+                                                    g_layer.frame.size());
+                                            fclose(df);
+                                        }
+                                    }
+                                }
+                            }
+                            CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+                        }
+                        CFRelease(sb);
+
+                        /* pace by presentation time so the movie runs at its own
+                         * speed without dropping everything at once */
+                        const double target = CMTimeGetSeconds(pts);
+                        const double elapsed =
+                            CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) - t0;
+                        if (target > elapsed){
+                            double wait = (target - elapsed) * 1000.0;
+                            if (wait > 200.0) wait = 200.0;   // a gap in the time line
+                            SDL_Delay((Uint32)wait);
+                        }
+                    }
+                }
+                last_reader_status = (long)[reader status];
+                if ([reader status] == AVAssetReaderStatusReading)
+                    [reader cancelReading];   // only a reader that is still reading
+                /* VideoToolbox delivers decoded frames from its own XPC queue, after
+                 * cancelReading returns.  Releasing the reader and the asset while
+                 * that queue is still emitting crashed inside
+                 * vtDecompressionDuctEmitDecodedFrame (signal 11, reproducible within
+                 * a minute of playback).  Wait for a terminal status and let the
+                 * queue drain before anything is released. */
+                for (int spin = 0; spin < 100; spin++){
+                    if ([reader status] != AVAssetReaderStatusReading) break;
+                    [NSThread sleepForTimeInterval:0.005];
+                }
+                [NSThread sleepForTimeInterval:0.05];   // let the emit queue settle
+                readerLock.unlock();
+            }
+            /* The pass is over.  Looping: go round again (the reader is built
+             * anew inside the worker, never from another thread).  Not looping:
+             * say so, and wait for a play() that asks for another pass or for a
+             * close. */
+            std::unique_lock<std::mutex> lk(g_layer.mtx);
+            {
+                /* One line per pass end.  'loop' says whether the flag survived
+                 * to this point, 'status' what AVFoundation thought of the
+                 * pass -- between them they explain why a looping clip stops. */
+                static int lp = -1;
+                if (lp < 0){ const char *e = getenv("ONS_TRACE_LOOP"); lp = (e && *e) ? 1 : 0; }
+                if (lp){
+                    static FILE *lf = NULL;
+                    if (!lf) lf = fopen("ons_loop.log", "w");
+                    if (lf){
+                        fprintf(lf, "pass end loop=%d stop=%d open=%d status=%ld eof=%d "
+                                    "serial=%llu consumed=%llu\n",
+                                (int)g_layer.loop, (int)g_layer.stop_requested,
+                                (int)g_layer.open, (long)last_reader_status,
+                                (int)g_layer.eof,
+                                (unsigned long long)g_layer.serial,
+                                (unsigned long long)g_layer.consumed);
+                        fflush(lf);
+                    }
+                }
+            }
+            if (g_layer.stop_requested) return;
+            if (g_layer.loop) continue;
+            g_layer.eof = true;
+            g_layer.paused = true;
+            g_layer.cv.notify_all();
+            while (!g_layer.stop_requested && !g_layer.paused_restart)
+                g_layer.cv.wait_for(lk, std::chrono::milliseconds(50));
+            if (g_layer.stop_requested) return;
+            g_layer.paused_restart = false;
+            g_layer.eof = false;
+            lk.unlock();
+        }
+    }
+}
+
+extern "C" int avfLayerOpen(const char *abs_path, int loop)
+{
+    if (!abs_path || !abs_path[0]) return -1;
+    {
+        static int st = -1, n = 0;
+        if (st < 0){ const char *e = getenv("ONS_TRACE_LAYER_FRAME"); st = (e && *e) ? 1 : 0; }
+        if (st){
+            n++;
+            FILE *f = fopen("ons_layerframe.log", "a");
+            if (f){ fprintf(f, "avfLayerOpen#%d path=%s loop=%d\n", n, abs_path, loop); fclose(f); }
+        }
+    }
+    avfLayerClose();
+
+    NSString *nspath = [NSString stringWithUTF8String:abs_path];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:nspath]){
+        utils::printInfo("wcmpg: file not found: %s\n", abs_path);
+        return -1;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_layer.mtx);
+        g_layer.open = true;
+        g_layer.paused = true;          /* open() leaves it paused */
+        g_layer.loop = loop != 0;
+        g_layer.stop_requested = false;
+        g_layer.eof = false;
+        g_layer.serial = 0;
+        g_layer.consumed = 0;
+        g_layer.paused_restart = false;
+        g_layer.frame.clear();
+    }
+    g_layer.worker = std::thread(layerDecodeLoop, nspath);
+    return 0;
+}
+
+extern "C" int avfLayerOpenMemory(const char *entry_name, const void *data, int size, int loop)
+{
+    if (!data || size <= 0) return -1;
+    std::string path = layerCachePath(entry_name ? entry_name : "entry");
+    if (path.empty()) return -1;
+    /* Always rewrite, atomically.  Reusing a file on a matching size was the likely
+     * source of the intermittent black frames: a cache file left over from an
+     * interrupted run can have the right length and wrong contents, and then every
+     * later run decodes garbage.  Writing to a side file and renaming removes both
+     * the truncation window and the stale-reuse case. */
+    std::string tmp = path + ".tmp";
+    FILE *fp = fopen(tmp.c_str(), "wb");
+    if (!fp) return -1;
+    size_t wrote = fwrite(data, 1, (size_t)size, fp);
+    fclose(fp);
+    if ((int)wrote != size) { remove(tmp.c_str()); return -1; }
+    if (rename(tmp.c_str(), path.c_str()) != 0) { remove(tmp.c_str()); return -1; }
+    return avfLayerOpen(path.c_str(), loop);
+}
+
+extern "C" int avfLayerPlay(void)
+{
+    std::lock_guard<std::mutex> lk(g_layer.mtx);
+    if (!g_layer.open) return 0;
+    if (g_layer.eof){
+        /* the file was played to its end before: ask the worker for a new pass */
+        g_layer.eof = false;
+        g_layer.paused_restart = true;
+    }
+    g_layer.paused = false;
+    g_layer.cv.notify_all();
+    return 1;
+}
+
+extern "C" int avfLayerPause(int pause)
+{
+    std::lock_guard<std::mutex> lk(g_layer.mtx);
+    g_layer.paused = pause ? true : false;
+    g_layer.cv.notify_all();
+    return 1;
+}
+
+extern "C" void avfLayerClose(void)
+{
+    {
+        std::lock_guard<std::mutex> lk(g_layer.mtx);
+        g_layer.stop_requested = true;
+        g_layer.open = false;
+        g_layer.cv.notify_all();
+    }
+    if (g_layer.worker.joinable()) g_layer.worker.join();
+    std::lock_guard<std::mutex> lk(g_layer.mtx);
+    g_layer.frame.clear();
+    g_layer.serial = g_layer.consumed = 0;
+    g_layer.w = g_layer.h = 0;
+    g_layer.eof = false;
+    g_layer.stop_requested = false;
+}
+
+/* Newest frame, or 0 when nothing new since the previous call. */
+/* Peek: is there a frame the main thread has not drawn yet?  Used by play() to
+ * wait briefly for the decoder's first frame, so the first refresh has something
+ * to blit instead of depending on when the worker happened to finish. */
+extern "C" int avfLayerHasFrame(void)
+{
+    std::lock_guard<std::mutex> lk(g_layer.mtx);
+    return (!g_layer.frame.empty() && g_layer.serial != g_layer.consumed) ? 1 : 0;
+}
+
+extern "C" int avfLayerFrame(const unsigned char **px, int *w, int *h, int *pitch)
+{
+    std::lock_guard<std::mutex> lk(g_layer.mtx);
+    if (!px || !w || !h || !pitch) return 0;
+    if (g_layer.frame.empty() || g_layer.serial == g_layer.consumed) return 0;
+    /* Hand out a copy, not a pointer into the worker's buffer.  The worker keeps
+     * writing g_layer.frame while the renderer blits from it, and the vector can
+     * reallocate -- that is a use-after-free, and it shows up as frames that are
+     * torn, repeated or never change.  g_layer_snapshot is owned by this thread
+     * and stays valid until the next call, which is the documented lifetime. */
+    g_layer_snapshot = g_layer.frame;
+    *px = g_layer_snapshot.data();
+    *w = g_layer.w;
+    *h = g_layer.h;
+    *pitch = g_layer.w * 4;
+    g_layer.consumed = g_layer.serial;
+    return 1;
+}
+
 #else   // !MACOSX: this TU is only added on Darwin (see CMakeLists.txt)
 int avfPlayFrames(const char *, int, int, const void *){ return 0; }
+int  avfLayerOpen(const char *, int){ return -1; }
+int  avfLayerPlay(void){ return 0; }
+int  avfLayerPause(int){ return 0; }
+void avfLayerClose(void){}
+int  avfLayerFrame(const void *, int *, int *, int *){ return 0; }
 int  avfStartAsync(const char *, int){ return -1; }
 void avfStopAsync(void){}
 int  avfIsAsyncPlaying(void){ return 0; }
