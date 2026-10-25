@@ -78,3 +78,20 @@ g     求值命名空间（get_eval("g.rur") 直接读引擎变量）
 **驱动技巧**：缺失的全局表名可以通过解析
 `attempt to index global 'X' (a nil value)` 逐个发现并加入 `ONS_LUA_TABLES`——
 本轮就是这样发现 `scr` 的。
+
+
+## 阶段 2 进行中（2026-10-26）：51/54 个 Lua 按序加载，title_init 到第 64 行
+
+`luahost` 新增：`ONS_LUA_ORDER`（按 `system_loadinglua()` 的顺序逐个
+`luaL_dofile`）、`ONS_LUA_ROOT`（归档根）、`e` 对象（冒号方法桩，__index 发放
+具名闭包——真实调用被追踪为 `e`）。
+
+实测：**51/54 个 Lua 文件加载成功**（3 个失败是顺序提取的杂质条目），
+`vartable_init()` 运行（游戏状态表 scr/vari 创建），`title_init` 推进到第 64 行。
+
+**第 64 行的边界**：`csvbtn3("ttl1","500",csv["ui_title"])` 需要 `csv` 表里的
+按钮定义数据——由引擎把 `system/table/*.tbl`（Lua 赋值文件）解析进 `csv` 全局表。
+宿主还没有实现这个 csv 数据层（这也解释了之前 "got string" 的错误）。
+
+**阶段 2 剩余**：csv 数据层（解析 tbl → csv 表）→ title_init 跑完 →
+阶段 3 的 UI 类 API 实装。
