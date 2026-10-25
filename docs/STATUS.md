@@ -149,7 +149,8 @@ brew install cmake scons sdl2 sdl2_image sdl2_mixer sdl2_ttf sdl3 sdl12-compat \
    第二个根因是 `NSPopInt` 用 `lua_pushnumber` 弹参数，Lua 5.3+ 把整数 1 渲染成
    字符串 "1.0"，游戏 Lua 用它拼接嵌套命令 `cutin_associate 1.0,""`，引擎 tokenizer
    对 `1.0` 的 end-status 推进与 `1` 不同，内层 handler 的 `NSPopComma` 失败退出。
-   改为 `lua_pushinteger` 后，盲点击连续运行 **30:49 零错误**（原 15 分钟即死）。
+   改为 `lua_pushinteger` 后，盲点击连续运行 **41:21 零错误、37 部影片**
+（原 15 分钟即死；30 分钟验收线以 30:49 首次越过，随后主动结束）。
    剩余：正文画进对话框（保留 setwindow3、只跳过 `_print`）；`setloop` 上屏；
    编号存档槽与振假名未测。
 2. **KiriKiri**：自动播放（每句需点击）；依赖 Lua 的脚本未覆盖。
