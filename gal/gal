@@ -46,6 +46,10 @@ def _reallive_binary():
     candidates = [
         os.path.join(ENGINES_ROOT, "rlvm", "build", "rlvm.app", "Contents", "MacOS", "rlvm"),
         os.path.expanduser("~/Documents/rlvm/build/rlvm.app/Contents/MacOS/rlvm"),
+        # the --no-bundle build (CI and build-all.sh use it): a bare static
+        # binary beside the sources, no .app around it
+        os.path.join(ENGINES_ROOT, "rlvm", "build", "release", "rlvm-static"),
+        os.path.expanduser("~/Documents/rlvm/build/release/rlvm-static"),
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -117,11 +121,16 @@ ENGINES = {
     "artemis": {
         "label": "Artemis (from scratch)",
         "binary": f"{ENGINES_ROOT}/artemis/build/agame",
-        "state": "partial",
-        "signatures": [("*.pfs", 10), ("*.ast", 8), ("*.iet", 8)],
+        "state": "runnable",
+        "signatures": [("*.pfs", 10), ("*.ast", 8), ("*.iet", 8),
+                       # every Artemis title ships system/init.lua and boots
+                       # through it; an extracted archive has these but no .pfs
+                       ("system/init.lua", 9), ("system/first.iet", 8)],
         "extras": [],
-        "notes": "written from scratch: .pfs, .ast, the scenario runtime and a "
-                 "window that plays a script; give agame a .ast to see it run",
+        "notes": "written from scratch: the scenario runtime plays real scripts "
+                 "(nicolan), and the embedded Lua 5.1 host runs a real title's "
+                 "whole boot chain and renders its screen (pf8 web trial, "
+                 "tools/luahost.cpp with ONS_RENDER=<png>)",
     },
 }
 
@@ -150,6 +159,10 @@ def scan_folder(path):
             if pattern.startswith("*."):
                 suffix = pattern[1:]
                 matched = [n for n in lowered if n.endswith(suffix)]
+            elif "/" in pattern:
+                # a literal path inside the game (system/init.lua): engines
+                # whose extracted layout keeps everything in subdirectories
+                matched = [pattern] if os.path.exists(os.path.join(path, pattern)) else []
             else:
                 matched = [n for n in lowered if n == pattern.lower()]
             if matched:
@@ -1199,7 +1212,16 @@ def build_command(name, game, extra):
         argv = [binary] + ([entry] if entry else [])
         return argv, path
     if game["engine"] == "artemis":
-        # the player takes a script; the game's own are under root/script
+        # a Lua-driven title boots through the embedded host: it runs the
+        # game's whole boot chain (init.lua -> system_loadinglua ->
+        # system_initialize -> title_init) and renders the screen; the run
+        # ends by itself, which verify counts as a clean pass
+        title_lua = os.path.join(path, "system", "ui", "title.lua")
+        if os.path.exists(title_lua) and os.path.exists(os.path.join(path, "system", "init.lua")):
+            luahost = binary.replace("agame", "luahost")
+            if os.path.exists(luahost):
+                return [luahost, title_lua], path
+        # otherwise the player takes a script; the game's own are under root/script
         script = None
         for root, dirs, files in os.walk(path):
             for f in sorted(files):
@@ -1384,8 +1406,15 @@ def cmd_verify(args):
              and not any(m in low for m in VERIFY_ERROR_MARKERS)]
     if proc.returncode not in (None, 0) and not timed_out:
         errors.append(f"engine exited with status {proc.returncode}")
+    # a run that reports its own completion is a pass even when it was quick:
+    # the Artemis Lua host finishes the whole boot chain and renders the title
+    # in well under a second, and that IS the work being verified
+    passed_markers = ("title_init ran", "rendered ")
+    completed = any(any(m in l for m in passed_markers) for l in lines)
     if errors:
         verdict, ok = f"✗ 有报错（{len(errors)} 条）", False
+    elif completed and proc.returncode in (None, 0):
+        verdict, ok = f"✓ 完成自己的工作（{elapsed:.1f}s，{len(lines)} 行输出）", True
     elif timed_out:
         verdict, ok = f"✓ 进入主循环（活过 {elapsed:.1f}s）", True
     elif elapsed < 2.0:

@@ -329,7 +329,25 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    g_rootDir = getenv("ONS_LUA_ROOT") ? getenv("ONS_LUA_ROOT") : ".";
+    /* Sensible defaults for the common case - a game extracted under a root
+     * that holds system/, with the title Lua named on the command line:
+     *   luahost <game>/system/ui/title.lua
+     * boots, initializes and renders <game>/system/ui/title-rendered.png
+     * without any environment setup. */
+    {
+        std::string self = argv[1];
+        size_t sl = self.find_last_of('/');
+        std::string selfDir = (sl == std::string::npos) ? "." : self.substr(0, sl);
+        if (!getenv("ONS_LUA_ROOT"))
+            setenv("ONS_LUA_ROOT", ".", 1);   /* the game root is the cwd */
+        if (!getenv("ONS_LUA_TABLES"))
+            setenv("ONS_LUA_TABLES", "gscr,flg,sv,scr,csv,game", 1);
+        if (!getenv("ONS_RENDER")){
+            std::string out = selfDir + "/title-rendered.png";
+            setenv("ONS_RENDER", out.c_str(), 1);
+        }
+        g_rootDir = getenv("ONS_LUA_ROOT") ? getenv("ONS_LUA_ROOT") : ".";
+    }
 
     lua_State *L = luaL_newstate();
     if (!L){ fprintf(stderr, "lua: state allocation failed\n"); return 1; }
