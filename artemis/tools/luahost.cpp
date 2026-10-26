@@ -58,6 +58,23 @@ static std::map<std::string, Layer> g_layers;
 static long g_layerOrder = 0;
 static std::string g_rootDir = ".";
 
+// the click bindings the lyevent tags register: key -> layer id
+static std::map<std::string, std::string> g_clickKeys;
+static void TagLyevent(lua_State *L, int idx)
+{
+    lua_getfield(L, idx, "type");
+    const char *type = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    if (!type || strcmp(type, "click")) return;      // only clicks matter here
+    lua_getfield(L, idx, "id");
+    const char *id = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "key");
+    const char *key = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    if (id && key) g_clickKeys[key] = id;
+}
+
 static bool ParseInts(const std::string& text, int* out, int count)
 {
     // "a,b,c,.." -> ints; returns false when any field is missing
@@ -103,23 +120,42 @@ static void TagLyprop(lua_State *L, int idx)
     lua_pop(L, 1);
     if (!id) return;
     auto it = g_layers.find(id);
-    if (it == g_layers.end()) return;
+    if (it == g_layers.end()){
+        /* a logical parent (the engine groups 500.d.2 over 500.d.2.0 without
+         * ever creating a layer for it): the position still belongs to the
+         * children, so hand it straight down */
+        const std::string prefix = std::string(id) + ".";
+        bool hit = false;
+        for (auto &kv : g_layers){
+            if (kv.first.compare(0, prefix.size(), prefix) == 0){
+                Layer &child = kv.second;
+                if (lua_getfield(L, idx, "left"), lua_isnumber(L, -1)){ child.x = (int)lua_tointeger(L, -1); }
+                lua_pop(L, 1);
+                if (lua_getfield(L, idx, "top"), lua_isnumber(L, -1)){ child.y = (int)lua_tointeger(L, -1); }
+                lua_pop(L, 1);
+                hit = true;
+            }
+        }
+        (void)hit;
+        return;
+    }
     Layer &layer = it->second;
 
     struct Field { const char *name; int *target; };
     int x = layer.x, y = layer.y, left = layer.x, top = layer.y;
     (void)left; (void)top;
+    bool movedX = false, movedY = false;
     lua_getfield(L, idx, "x");
-    if (lua_isnumber(L, -1)) layer.x = (int)lua_tointeger(L, -1);
+    if (lua_isnumber(L, -1)){ layer.x = (int)lua_tointeger(L, -1); movedX = true; }
     lua_pop(L, 1);
     lua_getfield(L, idx, "y");
-    if (lua_isnumber(L, -1)) layer.y = (int)lua_tointeger(L, -1);
+    if (lua_isnumber(L, -1)){ layer.y = (int)lua_tointeger(L, -1); movedY = true; }
     lua_pop(L, 1);
     lua_getfield(L, idx, "left");
-    if (lua_isnumber(L, -1)) layer.x = (int)lua_tointeger(L, -1);
+    if (lua_isnumber(L, -1)){ layer.x = (int)lua_tointeger(L, -1); movedX = true; }
     lua_pop(L, 1);
     lua_getfield(L, idx, "top");
-    if (lua_isnumber(L, -1)) layer.y = (int)lua_tointeger(L, -1);
+    if (lua_isnumber(L, -1)){ layer.y = (int)lua_tointeger(L, -1); movedY = true; }
     lua_pop(L, 1);
     lua_getfield(L, idx, "alpha");
     if (lua_isnumber(L, -1)) layer.alpha = (int)lua_tointeger(L, -1);
@@ -127,12 +163,26 @@ static void TagLyprop(lua_State *L, int idx)
     lua_getfield(L, idx, "visible");
     if (lua_isnumber(L, -1)) layer.visible = lua_tointeger(L, -1) != 0;
     lua_pop(L, 1);
+    const bool moved = movedX || movedY;
     lua_getfield(L, idx, "clip");
     if (const char *clip = lua_tostring(L, -1)){
         int v[4];
         if (ParseInts(clip, v, 4)){ layer.cx = v[0]; layer.cy = v[1]; layer.cw = v[2]; layer.ch = v[3]; }
     }
     lua_pop(L, 1);
+
+    /* the engine's layer tree: positioning 500.d.2 moves its child layers
+     * (500.d.2.0 - the clickable slices) with it.  A moved parent repositions
+     * every layer whose id extends this one with a dot. */
+    if (moved){
+        const std::string prefix = std::string(id) + ".";
+        for (auto &kv : g_layers){
+            if (kv.first.compare(0, prefix.size(), prefix) == 0){
+                kv.second.x = layer.x;
+                kv.second.y = layer.y;
+            }
+        }
+    }
 }
 
 static void TagLydel(lua_State *L, int idx)
@@ -206,6 +256,7 @@ static int engineStub(lua_State *L)
         if (!strcmp(tagName, "lyc")) TagLyc(L, 2);
         else if (!strcmp(tagName, "lyprop")) TagLyprop(L, 2);
         else if (!strcmp(tagName, "lydel")) TagLydel(L, 2);
+        else if (!strcmp(tagName, "lyevent")) TagLyevent(L, 2);
     }
     lua_pushboolean(L, 0);                    /* false: the falsy default */
     return 1;
@@ -532,6 +583,80 @@ int main(int argc, char **argv)
     } else {
         printf("no title_init defined\n");
         lua_pop(L, 1);
+    }
+
+    // ONS_CLICK="x,y": simulate a click - hit-test the lyevent bindings, run
+    // the game's own over/click chain (btn_over sets btn.cursor, btn_click
+    // executes the button), then the post-click state renders below
+    if (const char *click = getenv("ONS_CLICK")){
+        int cx = 0, cy = 0;
+        if (ParseInts(click, &cx, 1)){
+            int v2[2] = {cx, cy};
+            if (ParseInts(click, v2, 2)){ cx = v2[0]; cy = v2[1]; }
+            std::string hitKey;
+            const Layer *hitLayer = NULL;
+            long hitOrder = -1;
+            for (const auto &kv : g_clickKeys){
+                auto it = g_layers.find(kv.second);
+                if (it == g_layers.end()) continue;
+                const Layer &layer = it->second;
+                const int w = layer.cw > 0 ? layer.cw : layer.img.width;
+                const int h = layer.ch > 0 ? layer.ch : layer.img.height;
+                if (cx >= layer.x && cx < layer.x + w && cy >= layer.y && cy < layer.y + h
+                    && layer.order > hitOrder){
+                    hitOrder = layer.order;
+                    hitKey = kv.first;
+                    hitLayer = &layer;
+                }
+            }
+            if (!hitKey.empty()){
+                printf("click at %d,%d hit %s (key=%s)\n", cx, cy,
+                       hitLayer ? hitLayer->img.width ? hitKey.c_str() : "?" : "?",
+                       hitKey.c_str());
+                // the game's own handlers, with the game's own conventions:
+                // btn_over(e, {key=...}) then btn_click(e, {click=true, key=...})
+                lua_getglobal(L, "btn_over");
+                if (lua_isfunction(L, -1)){
+                    lua_getglobal(L, "e");            /* self */
+                    lua_newtable(L);
+                    lua_pushstring(L, "key");
+                    lua_pushstring(L, hitKey.c_str());
+                    lua_settable(L, -3);
+                    if (lua_pcall(L, 2, 0, 0)){
+                        fprintf(stderr, "btn_over: %s\n", lua_tostring(L, -1));
+                        lua_pop(L, 1);
+                    }
+                } else lua_pop(L, 1);
+                lua_getglobal(L, "btn_click");
+                if (lua_isfunction(L, -1)){
+                    lua_getglobal(L, "e");            /* self */
+                    lua_newtable(L);
+                    lua_pushstring(L, "click");
+                    lua_pushboolean(L, 1);
+                    lua_settable(L, -3);
+                    lua_pushstring(L, "key");
+                    lua_pushstring(L, hitKey.c_str());
+                    lua_settable(L, -3);
+                    if (lua_pcall(L, 2, 0, 0)){
+                        fprintf(stderr, "btn_click: %s\n", lua_tostring(L, -1));
+                        lua_pop(L, 1);
+                    }
+                } else lua_pop(L, 1);
+            } else {
+                printf("click at %d,%d: no button there\n", cx, cy);
+                if (debugOn())
+                    for (const auto &kv : g_clickKeys){
+                        auto it = g_layers.find(kv.second);
+                        if (it == g_layers.end())
+                            printf("  %s -> %s: no layer\n", kv.first.c_str(), kv.second.c_str());
+                        else
+                            printf("  %s -> %s at %d,%d %dx%d\n", kv.first.c_str(),
+                                   kv.second.c_str(), it->second.x, it->second.y,
+                                   it->second.cw ?: it->second.img.width,
+                                   it->second.ch ?: it->second.img.height);
+                    }
+            }
+        }
     }
 
     // the composite: every layer bottom-up, clipped, alpha-blended
