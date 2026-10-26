@@ -144,3 +144,19 @@ init.lua → system_loadinglua（54 文件）→ system_initialize → title_ini
 透出（应为黑色衬底）。属化妆级问题，下一轮修。
 
 **目标 4 的「出画面」达成**。
+
+
+## 阶段 4（进行中）：标题可交互
+
+`ONS_CLICK="x,y"` 命中测试 lyevent 绑定 → 调用游戏自己的
+btn_over（设 btn.cursor）→ btn_click（执行按钮）——与真实鼠标一致的链路。
+
+点击 bt_start (130,652)：游戏状态机推进——按钮焦点切换、开始面板出现、
+背景转场（1570 采样点差异，帧哈希完全改变）。
+
+实现的两条引擎事实：
+1. 层树：对逻辑父层（500.d.2，从未 lyc）的 lyprop 会传递给子层
+   （500.d.2.0，可点击切片）
+2. 游戏函数是冒号风格：btn_over(e, param) 需要 e 作为 self
+
+遗留：btn_over 内部的 se.lua 音效路径需要音量状态（阶段 5 的音频桥）。
