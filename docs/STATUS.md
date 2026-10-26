@@ -7,10 +7,15 @@
 | ① NScripter | 商业体验版（TRT，1.5 GB）+ 官方 SDK 5 套 | 对话框正文、振假名、编号存读档、插入影片层、41 分钟连续游玩 | `load-restored-scene.png`、`ruby-above-text.png` |
 | ② KiriKiri | 真实 KAG 工程 + 官方 demo | 整章自动播放、存读档、影片、音频 | 35 次剧本加载零错误 |
 | ③ RealLive | CLANNAD FV（4 GB） | 标题/立绘/台词/菜单/BGM | 260/260 测试 |
-| ④ Ethornell | 官方体验版 | 标题画面完整渲染 | BGI 帧 |
+| ④ Ethornell | 官方体验版（遥か碧の花嫁に） | 标题→虚构宣言→**对白播放**（系统菜单条齐全） | `openbgi/screenshots/bgi-dialogue.png` |
 | ⑤ Artemis（从零重写） | 3 套真实归档（pf6/pf8） | **真实 Lua UI 启动链跑通 + 标题画面渲染**（ラズベリーキューブ） | `pf8-title-rendered.png`（775 个 e:tag） |
 
-通用：`gal` 管理器（add/play/verify/doctor/savetest）+ `gal app` 双击启动器。
+通用：`gal` 管理器（add/play/verify/doctor/savetest/app）——**14/14 已注册游戏 verify 全绿**，
+五引擎二进制 doctor 全绿，RLVM 单元测试 260/260；`gal app` 双击启动器实测。
+
+完美化阶段的其余修复（2026-10-26）：gal 识别 Artemis 子路径指纹（system/init.lua）、
+RLVM 静态二进制纳入 doctor 解析、verify 的完成标记（快速完成的工作不再误判为失败）、
+非游戏条目（作者模板/失效临时数据）移除而非挂红行。
 
 Artemis 的诚实标注：scetween 动画（标签已捕获，插值未实装）、`.psb`（语料为 0，
 按规格实现）——余项见 `docs/artemis-lua-host.md`。
